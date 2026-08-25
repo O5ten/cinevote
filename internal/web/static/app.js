@@ -26,6 +26,8 @@
     var timer = null;
     var inFlight = null;
     var lastQuery = "";
+    var rows = [];    // the rendered suggestion buttons
+    var active = -1;  // which one the arrow keys have landed on
 
     title.addEventListener("input", function () {
       // Picking a result stops being valid as soon as the title is edited by
@@ -34,14 +36,104 @@
       schedule();
     });
 
-    // Enter in the title field searches rather than submitting a half-filled
-    // form, as long as we have something to search with.
+    // Keyboard control of the suggestion list: arrows to walk it, Enter to take
+    // the highlighted one, Escape to get out. Enter with nothing highlighted
+    // searches instead of submitting a half-filled form.
     title.addEventListener("keydown", function (event) {
-      if (event.key === "Enter" && title.value.trim().length >= MIN_QUERY && !sourceID.value) {
-        event.preventDefault();
-        searchNow();
+      switch (event.key) {
+        case "ArrowDown":
+        case "Down": // older Edge/Firefox
+          event.preventDefault();
+          if (box.hidden) {
+            searchNow(); // reopen the list for what is already typed
+          } else {
+            move(1);
+          }
+          return;
+
+        case "ArrowUp":
+        case "Up":
+          event.preventDefault();
+          move(-1);
+          return;
+
+        case "Home":
+          if (!box.hidden && rows.length) {
+            event.preventDefault();
+            setActive(0);
+          }
+          return;
+
+        case "End":
+          if (!box.hidden && rows.length) {
+            event.preventDefault();
+            setActive(rows.length - 1);
+          }
+          return;
+
+        case "Enter":
+          if (active >= 0 && rows[active]) {
+            event.preventDefault();
+            rows[active].click();
+            return;
+          }
+          if (title.value.trim().length >= MIN_QUERY && !sourceID.value) {
+            event.preventDefault();
+            searchNow();
+          }
+          return;
+
+        case "Escape":
+        case "Esc":
+          if (!box.hidden) {
+            event.stopPropagation(); // don't let it close the <details> too
+            hide();
+          }
+          return;
+
+        case "Tab":
+          hide(); // moving on: the list has no business staying open
+          return;
       }
     });
+
+    // move walks the list, wrapping around at both ends.
+    function move(step) {
+      if (!rows.length) return;
+      var next = active + step;
+      if (next < 0) next = rows.length - 1;
+      if (next >= rows.length) next = 0;
+      setActive(next);
+    }
+
+    // setActive highlights one row and tells screen readers about it. Passing
+    // -1 clears the highlight.
+    function setActive(index) {
+      if (active >= 0 && rows[active]) {
+        rows[active].classList.remove("active");
+        rows[active].setAttribute("aria-selected", "false");
+      }
+      active = index;
+      if (active < 0 || !rows[active]) {
+        active = -1;
+        title.removeAttribute("aria-activedescendant");
+        return;
+      }
+      var row = rows[active];
+      row.classList.add("active");
+      row.setAttribute("aria-selected", "true");
+      title.setAttribute("aria-activedescendant", row.id);
+      // Keep the highlight visible without moving the page itself.
+      row.scrollIntoView({ block: "nearest" });
+    }
+
+    // clearRows forgets the rendered list, so the arrow keys never point at
+    // buttons that are no longer in the document.
+    function clearRows() {
+      setActive(-1);
+      rows = [];
+      box.textContent = "";
+    }
 
     if (button) {
       button.addEventListener("click", searchNow);
@@ -115,7 +207,7 @@
 
     function hide() {
       box.hidden = true;
-      box.textContent = "";
+      clearRows();
       open(false);
     }
 
@@ -129,7 +221,7 @@
     function message(text) {
       box.hidden = false;
       open(true);
-      box.textContent = "";
+      clearRows();
       var p = document.createElement("p");
       p.className = "results-msg";
       p.textContent = text;
@@ -139,17 +231,20 @@
     function render(results) {
       box.hidden = false;
       open(true);
-      box.textContent = "";
+      clearRows();
 
       if (!results.length) {
         message("Inga träffar på " + label + ". Fyll i uppgifterna själv.");
         return;
       }
 
-      results.forEach(function (movie) {
+      results.forEach(function (movie, index) {
         var row = document.createElement("button");
         row.type = "button";
         row.className = "result";
+        row.id = "search-result-" + index;
+        row.setAttribute("role", "option");
+        row.setAttribute("aria-selected", "false");
         row.title = movie.title + (movie.year ? " (" + movie.year + ")" : "");
 
         row.appendChild(thumbnail(movie));
@@ -173,20 +268,23 @@
         row.addEventListener("click", function () {
           select(movie);
         });
+        // Keep mouse and keyboard in agreement about what is highlighted.
+        row.addEventListener("mouseenter", function () {
+          setActive(index);
+        });
         box.appendChild(row);
+        rows.push(row);
       });
     }
 
-    // Escape closes the list, and so does clicking anywhere outside it — the
-    // usual way out of an autocomplete.
-    title.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && !box.hidden) {
-        event.stopPropagation();
-        hide();
-      }
-    });
+    // Clicking anywhere outside closes the list, the usual way out of an
+    // autocomplete. (Escape is handled with the other keys above.)
     document.addEventListener("click", function (event) {
       if (box.hidden) return;
+      // Selecting a row removes it before this bubbles up here, and a detached
+      // node counts as "outside" — which would wipe the confirmation we just
+      // rendered. Ignore clicks on elements that are no longer in the page.
+      if (event.target instanceof Node && !event.target.isConnected) return;
       var wrap = box.closest(".searchfield");
       if (wrap && !wrap.contains(event.target)) hide();
     });

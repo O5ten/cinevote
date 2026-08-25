@@ -210,6 +210,21 @@ h1, h2, h3 { line-height: 1.2; margin: 0; letter-spacing: -0.015em; }
   text-transform: uppercase;
 }
 .demohint { color: var(--muted); }
+kbd {
+  display: inline-block;
+  min-width: 1.5em;
+  padding: 1px 5px;
+  border-radius: 5px;
+  border: 1px solid var(--line-2);
+  border-bottom-width: 2px;
+  background: rgba(6, 4, 15, 0.7);
+  font-family: inherit;
+  font-size: 0.9em;
+  font-weight: 650;
+  text-align: center;
+  color: #ded6f7;
+}
+
 code {
   padding: 1px 6px;
   border-radius: 6px;
@@ -402,6 +417,10 @@ textarea { resize: vertical; }
 
 /* ------------------------------------------------------- search results --- */
 
+/* An author display rule beats the browser's [hidden] { display: none }, so the
+   hidden state has to be spelled out or an empty list paints a stray strip. */
+.results[hidden] { display: none; }
+
 /* The suggestion list hangs off the bottom of the search field, like any
    autocomplete: it overlays the rest of the form instead of shoving it down. */
 .results {
@@ -441,6 +460,12 @@ textarea { resize: vertical; }
 .result:hover, .result:focus-visible {
   background: rgba(46, 230, 197, 0.12);
   outline: none;
+}
+/* Where the arrow keys are. Needs to read clearly even when the mouse is
+   hovering somewhere else entirely. */
+.result.active {
+  background: rgba(46, 230, 197, 0.18);
+  box-shadow: inset 3px 0 0 var(--teal);
 }
 
 /* Fixed box: a poster that fails to load can never reflow the row, and its

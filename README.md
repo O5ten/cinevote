@@ -97,8 +97,10 @@ log at startup.
 How lookups work:
 
 * Type a title and pause; the app searches OMDb automatically (600 ms after the
-  last keystroke) and drops the hits in a list attached to the field. Escape or a
-  click outside closes it.
+  last keystroke) and drops the hits in a list attached to the field.
+* Walk the list with ↑/↓ (it wraps, and Home/End jump to the ends), take the
+  highlighted one with Enter, or click it. ↓ on a closed list reopens it, Escape
+  and Tab close it, and a click outside does too.
 * Search hits are enriched with rating, genre and director before being shown,
   and those lookups are cached, so repeated typing does not burn through the
   daily quota.
