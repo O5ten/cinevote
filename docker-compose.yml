@@ -14,9 +14,7 @@ services:
       - "${CINEVOTE_PORT:-8080}:8080"
     # Read .env if it is there. Everything below can also come from that file;
     # what is set here wins over what the file says.
-    env_file:
-      - path: .env
-        required: false
+    env_file: .env
     environment:
       # Movie data. OMDB_API_KEY enables poster/rating lookups; without it the
       # app still works with hand-pasted poster links.
@@ -55,9 +53,7 @@ services:
     restart: unless-stopped
     ports:
       - "${CINEVOTE_DEMO_PORT:-8080}:8080"
-    env_file:
-      - path: .env
-        required: false
+    env_file: .env
     environment:
       # Optional even here — the demo ships with its own poster data.
       # Get a free key at https://www.omdbapi.com/apikey.aspx to search live.
