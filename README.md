@@ -2,219 +2,259 @@
 
 [![CI](https://github.com/o5ten/cinevote/actions/workflows/ci.yml/badge.svg)](https://github.com/o5ten/cinevote/actions/workflows/ci.yml)
 
-Ett litet filmröstningssystem för planerade filmkvällar. Alla lägger in förslag,
-alla har fem röster att fördela, och den film som flest personer röstat på är
-den som visas. När filmen är sedd markerar admin den — och alla som röstade på
-den får tillbaka sin röst till nästa gång.
+A small movie voting board for planned movie nights. Everyone adds suggestions,
+everyone gets five votes to spread around, and the film the most people backed
+is the one you watch. Once it has been watched the admin marks it as seen — and
+everyone who voted for it gets that vote back for next time.
 
-Byggt i Go (inga externa beroenden i frontend), paketerat med Docker och byggt
-i GitHub Actions.
+Go, SQLite and server-rendered HTML. One static binary, no frontend build step,
+no runtime dependencies. The interface is in Swedish; everything else is here.
 
-## Kravlistan
+## Demo mode — zero configuration
 
-| Krav | Hur det är löst |
-| --- | --- |
-| Unika användare | Konto med användarnamn + lösenord (bcrypt). Användarnamn är unika oavsett versaler. |
-| Admin (en enda) | Kontot som anges i `CINEVOTE_ADMIN_USERNAME` (default `admin`). Databasen tillåter bara en admin — övriga degraderas automatiskt. |
-| Alla kan lägga in filmförslag | Formuläret på startsidan. Söker fram poster och betyg automatiskt. |
-| Fem röster per användare att fördela | Konfigurerbart med `CINEVOTE_MAX_VOTES`, default 5. Räknas och visas som prickar i headern. |
-| En röst per film | Databasnyckel `(user_id, movie_id)` — dubbelröstning är omöjlig, inte bara otillåten i UI:t. |
-| Admin kan markera filmer som sedda | Knapp på varje kort och i admin-tabellen. |
-| Röster på sedda filmer återlämnas | Rösterna ligger kvar som historik men räknas inte mot budgeten. Se `SetSeen` i `internal/store/store.go`. |
-| De 3 mest röstade visas prominent | Egen "Toppen"-sektion med medaljer, och ledaren annonseras i hero-rutan som nästa filmkväll. |
-| Filmposters i UI:t | Hämtas från OMDb (IMDb-data) vid förslag, eller klistras in manuellt. |
+Just want to see it? Start it with `-demo`. No API key, no admin password, no
+database to set up:
 
-## Demoläge — noll konfiguration
-
-Vill du bara se hur det ser ut? Starta med `-demo` — ingen API-nyckel, inget
-admin-lösenord, ingen databas att sätta upp.
-
-Från en klon:
+From a clone:
 
 ```bash
 git clone https://github.com/o5ten/cinevote.git
 cd cinevote
-go run ./cmd/cinevote -demo        # eller: make demo
-docker compose --profile demo up   # eller: make compose-demo
+go run ./cmd/cinevote -demo        # or: make demo
+docker compose --profile demo up   # or: make compose-demo
 ```
 
-Eller direkt från den publicerade imagen, utan att klona något (finns så snart
-CI har byggt en push till `main`, och paketet är satt till publikt i GHCR):
+Or straight from the published image, nothing to clone (available once CI has
+built a push to `main`, and the package has been made public in GHCR):
 
 ```bash
-docker run --rm -p 8080:8080 -e CINEVOTE_DB= ghcr.io/o5ten/cinevote:latest -demo
+docker run --rm -p 8080:8080 ghcr.io/o5ten/cinevote:latest -demo
 ```
 
-Öppna <http://localhost:8080> och klicka på ett av demokontona på
-inloggningssidan — de fylls i automatiskt. Lösenordet är `demo1234` för alla.
+Open <http://localhost:8080> and click one of the demo accounts on the login
+page — it fills the form in for you. The password is `demo1234` for all of them.
 
-Demoläget skapar fem konton (`admin`, Anna, Björn, Cissi, David), tio filmer med
-riktiga posters och betyg, utlagda röster och två filmer som redan är sedda — så
-topplistan, röstbudgeten och "sedd"-funktionen syns direkt. Data ligger i en
-tillfällig databas som nollställs vid varje omstart, och en gul ruta i UI:t
-påminner om att inget är på riktigt.
+Demo mode creates five accounts (`admin`, Anna, Björn, Cissi, David), ten films
+with real posters, ratings, directors and cast, votes already cast, and two
+films already watched — so the leaderboard, the vote budget, the filters and the
+"similar films" scoring all have something to show immediately. Three of the
+films deliberately share a director so the similarity ranking has something to
+find.
 
-Demoläget slås bara på med `-demo` eller `CINEVOTE_DEMO=true` — aldrig av sig
-självt. Använd det inte för en riktig filmkväll: alla delar ett känt lösenord.
+Demo mode always uses a throwaway database that is recreated on every start,
+whatever `CINEVOTE_DB` says, so it can never touch a real one. It only turns on
+via `-demo` or `CINEVOTE_DEMO=true`, never by itself. Don't use it for an actual
+movie night: everyone shares one obvious password.
 
-## Kom igång
+## Running it for real
 
-### Med Docker Compose
+### With Docker Compose
 
 ```bash
 git clone https://github.com/o5ten/cinevote.git && cd cinevote
-cp .env.example .env      # fyll i OMDB_API_KEY
+cp .env.example .env      # fill in OMDB_API_KEY
 docker compose up --build -d
-docker compose logs -f     # här står admin-lösenordet om du inte satt något
+docker compose logs -f    # the admin password is in here if you didn't set one
 ```
 
-Öppna <http://localhost:8080>.
+### Locally
 
-### Lokalt
-
-Kräver Go 1.22 eller senare — inget annat, databasdrivaren är ren Go.
+Needs Go 1.22 or newer — nothing else, the database driver is pure Go.
 
 ```bash
-export OMDB_API_KEY=...        # frivilligt, men posters blir tomma utan
-make run                       # eller: go run ./cmd/cinevote
+export OMDB_API_KEY=...   # optional, but posters stay blank without it
+make run                  # or: go run ./cmd/cinevote
 ```
 
-Databasen är en SQLite-fil (`data/cinevote.db` lokalt, `/data/cinevote.db` i
-containern). Ta backup genom att kopiera filen.
+The database is a single SQLite file (`data/cinevote.db` locally,
+`/data/cinevote.db` in the container). Back it up by copying the file.
 
-### Första inloggningen
+### First login
 
-Sätt `CINEVOTE_ADMIN_PASSWORD` innan första starten, eller låt appen generera
-ett lösenord som skrivs ut **en gång** i loggen:
+Set `CINEVOTE_ADMIN_PASSWORD` before the first start, or let the app generate
+one and print it **once**:
 
 ```
 level=WARN msg="generated admin password — save it now, it is not shown again" username=admin password=...
 ```
 
-Övriga skapar egna konton på `/register`. Sätt `CINEVOTE_REGISTRATION_CODE` om
-sidan är öppen mot internet — då krävs en delad inbjudningskod.
+Everyone else signs up at `/register`. Set `CINEVOTE_REGISTRATION_CODE` if the
+site is reachable from the internet — then a shared invite code is required.
 
-## Filmdata och posters
+## Movie data and posters
 
-Poster, betyg, speltid, genre och handling hämtas från **OMDb** — det fria
-API:et för IMDb-data.
+Posters, ratings, runtime, genre, director, cast and plot come from **OMDb**,
+the free API for IMDb data.
 
-> **Skaffa en gratis API-nyckel här: <https://www.omdbapi.com/apikey.aspx>**
-> Välj "FREE (1,000 daily limit)", fyll i din mejl och klistra in nyckeln du får
-> som `OMDB_API_KEY` i `.env`.
+> **Get a free API key here: <https://www.omdbapi.com/apikey.aspx>**
+> Pick "FREE (1,000 daily limit)", enter your email, and put the key you get
+> into `.env` as `OMDB_API_KEY`.
 
-Appen visar samma länk i UI:t så länge ingen nyckel är satt — i förslagsformuläret,
-på adminsidan och i demorutan — och skriver ut den i loggen vid start.
+The app shows that same link in the UI while no key is configured — in the
+suggestion form, on the admin page and in the demo banner — and prints it in the
+log at startup.
 
-* I formuläret: skriv en titel, tryck **Sök på IMDb**, välj rätt film.
-* Skickar du in utan att söka gör servern en bästa-träff-sökning på titeln.
-* Servern slår alltid upp filmen på nytt via `imdb_id` innan den sparas, så
-  webbläsaren kan inte hitta på metadata. API-nyckeln lämnar aldrig servern.
-* Utan nyckel fungerar allt utom automatiken — klistra in en posterlänk själv.
+How lookups work:
 
-TMDB finns som alternativ backend (`CINEVOTE_POSTER_SOURCE=tmdb` +
-`TMDB_API_KEY`), t.ex. om ni röstar på mycket icke-engelska titlar.
+* Type a title and pause; the app searches OMDb automatically (600 ms after the
+  last keystroke) and drops the hits in a list attached to the field. Escape or a
+  click outside closes it.
+* Search hits are enriched with rating, genre and director before being shown,
+  and those lookups are cached, so repeated typing does not burn through the
+  daily quota.
+* Hits are ordered best first, where "best" weighs the rating against how many
+  people gave it: an exact title match wins outright, then films with a lot of
+  ratings, then rating. Without that, searching "Inception" offers you an
+  obscure short rated 8.9 by 187 people ahead of the 8.8 one rated by three
+  million.
+* Submit without picking anything and the server resolves the title itself.
+* The server always re-resolves the film from its IMDb id before saving, so the
+  browser cannot invent metadata and the API key never leaves the server.
+* Without a key everything still works — paste a poster URL yourself.
 
-## Konfiguration
+### Similar films
 
-Allt styrs med miljövariabler:
+Every card has a **Liknande** link. That page has two halves:
 
-| Variabel | Default | Betydelse |
+1. **Films already on the board** that resemble it, scored on shared director,
+   genres and cast, plus era and rating, with the reasons listed under each
+   card. Works offline, no key needed.
+2. **Suggestions from outside the list**, for discovering films nobody has
+   proposed yet. OMDb has no recommendation endpoint, so this half needs a free
+   TMDB key: <https://www.themoviedb.org/settings/api>, then
+   `TMDB_API_KEY=...`. Metadata and posters keep coming from OMDb; TMDB is only
+   asked "what is like this?". Each suggestion has a one-click **Föreslå den
+   här** button. Without the key, the page explains how to enable it instead of
+   pretending there is nothing to show.
+
+TMDB can also replace OMDb entirely as the metadata backend
+(`CINEVOTE_POSTER_SOURCE=tmdb`), which handles non-English titles better.
+
+## Filtering and sorting
+
+The board has a filter bar, and every filter is a URL parameter, so a filtered
+view is a link you can paste in the group chat:
+
+| Parameter | Values |
+| --- | --- |
+| `q` | free text across title, director, cast, genre, plot and who suggested it — every word has to match |
+| `genre` | one genre, from the films actually on the board |
+| `director` | one director, likewise |
+| `min_rating` | `6`, `7`, `8`, `8.5` … films without a rating are excluded |
+| `sort` | `votes` (default), `rating`, `year`, `new`, `title` |
+| `show` | `open` (default), `all`, `seen` |
+
+Equal vote counts are broken by rating, so the better-reviewed film is listed
+first — the same preference applies wherever films are ranked. While a filter is active the podium is hidden: those top-three ranks
+describe the whole board, and showing them beside a filtered list would be
+misleading.
+
+## Configuration
+
+Everything is environment variables. The only flags are `-demo` and `-version`.
+
+| Variable | Default | Meaning |
 | --- | --- | --- |
-| `CINEVOTE_ADDR` | `:8080` | Lyssnaradress |
-| `CINEVOTE_DB` | `data/cinevote.db` | Sökväg till SQLite-filen |
-| `CINEVOTE_SITE_NAME` | `CineVote` | Namn i headern |
-| `CINEVOTE_MAX_VOTES` | `5` | Röster per användare |
-| `CINEVOTE_ADMIN_USERNAME` | `admin` | Det enda admin-kontot |
-| `CINEVOTE_ADMIN_PASSWORD` | *(genereras)* | Sätts vid start; uppdaterar lösenordet om det ändras |
-| `CINEVOTE_REGISTRATION_CODE` | *(tom)* | Kräv inbjudningskod vid registrering |
-| `CINEVOTE_SESSION_DAYS` | `30` | Hur länge en inloggning gäller |
-| `CINEVOTE_SECURE_COOKIES` | `false` | Sätt `true` bakom HTTPS |
-| `CINEVOTE_DEMO` | `false` | Demoläge, samma som flaggan `-demo` |
-| `OMDB_API_KEY` | *(tom)* | Aktiverar IMDb-uppslag |
-| `CINEVOTE_POSTER_SOURCE` | *(auto)* | `imdb`, `tmdb` eller `none` |
-| `TMDB_API_KEY` | *(tom)* | För `CINEVOTE_POSTER_SOURCE=tmdb` |
+| `CINEVOTE_ADDR` | `:8080` | Listen address |
+| `CINEVOTE_DB` | `data/cinevote.db` | SQLite file (ignored in demo mode) |
+| `CINEVOTE_SITE_NAME` | `CineVote` | Name in the header |
+| `CINEVOTE_MAX_VOTES` | `5` | Votes per user |
+| `CINEVOTE_ADMIN_USERNAME` | `admin` | The single admin account |
+| `CINEVOTE_ADMIN_PASSWORD` | *(generated)* | Set at start; updates the password if changed |
+| `CINEVOTE_REGISTRATION_CODE` | *(empty)* | Require an invite code to sign up |
+| `CINEVOTE_SESSION_DAYS` | `30` | How long a login lasts |
+| `CINEVOTE_SECURE_COOKIES` | `false` | Set `true` behind HTTPS |
+| `CINEVOTE_DEMO` | `false` | Demo mode, same as `-demo` |
+| `OMDB_API_KEY` | *(empty)* | Enables IMDb lookups |
+| `CINEVOTE_POSTER_SOURCE` | *(auto)* | `imdb`, `tmdb` or `none` |
+| `TMDB_API_KEY` | *(empty)* | Enables "similar films" from outside the list |
 
-## Så funkar röstningen
+## How the voting works
 
-* Varje användare har fem röster och kan lägga **en** röst per film.
-* Rösterna kan flyttas fram till filmkvällen — ta tillbaka en röst och lägg den
-  någon annanstans.
-* En röst på en **sedd** film räknas inte mot budgeten, men står kvar i
-  historiken så man ser vilka som valde filmen.
-* Öppnar admin en sedd film igen tas de röster bort som ägarna redan hunnit
-  återanvända — annars skulle någon kunna ha sex röster ute samtidigt.
-* Egna förslag kan tas bort så länge ingen röstat på dem. Därefter är det
-  admins bord.
+* Every user has five votes and may place **one** vote per film.
+* Votes can be moved right up until movie night — take a vote back and put it
+  somewhere else.
+* A vote on a film that has been **seen** does not count against the budget, but
+  it stays in the record so you can see who picked it.
+* If the admin puts a seen film back into the running, any votes whose owners
+  have already re-spent them are dropped — otherwise someone would have six
+  votes in play.
+* You can withdraw your own suggestion as long as nobody has voted for it.
+  After that it is the admin's call.
 
-## Utveckling
-
-Flaggor: `-demo` (demoläge) och `-version`. Allt annat är miljövariabler.
+## Development
 
 ```bash
-make demo        # seedad demo på :8080, kräver ingen konfiguration
+make demo        # seeded demo on :8080, needs no configuration
 make test        # go test -race ./...
-make lint        # gofmt + go vet, samma som i CI
-make build       # statisk binär i dist/
-make docker      # bygger containerimagen
+make lint        # gofmt + go vet, same as CI
+make build       # static binary in dist/
+make docker      # build the container image
 ```
 
-Testerna täcker röstreglerna på databasnivå (`internal/store`), OMDb-klienten
-mot en fejkad API-server (`internal/poster`), seeddatan för demoläget
-(`internal/demo`) och hela HTTP-flödet inklusive inloggning, CSRF, röstning,
-admin och demoinloggningarna (`internal/web`). Inget test rör nätet.
+Tests cover the voting rules at the database level (`internal/store`), the OMDb
+client against a fake API server including rating-ranked search and caching
+(`internal/poster`), filtering, sorting and similarity scoring
+(`internal/browse`), the demo seed data (`internal/demo`), and the whole HTTP
+flow — login, CSRF, voting, admin, filters, the similar page and the demo logins
+(`internal/web`). No test touches the network.
 
-### Struktur
+### Layout
 
 ```
-cmd/cinevote        main, konfiguration, graceful shutdown
-internal/config     miljövariabler
-internal/auth       lösenordshashning, tokens, validering
-internal/store      SQLite: användare, sessioner, filmer, röster
-internal/demo       seeddata för demoläget (konton, filmer, röster)
-internal/poster     OMDb/TMDB-uppslag bakom ett gemensamt gränssnitt
-internal/web        routing, sessioner, HTML-mallar, CSS/JS (embeddade)
+cmd/cinevote        main, configuration, graceful shutdown
+internal/config     environment variables
+internal/auth       password hashing, tokens, validation
+internal/store      SQLite: users, sessions, movies, votes
+internal/browse     filtering, sorting and similarity scoring
+internal/demo       seed data for demo mode (accounts, films, votes)
+internal/poster     OMDb/TMDB lookups behind one interface
+internal/web        routing, sessions, HTML templates, CSS/JS (embedded)
 ```
 
-Servern är en enda statisk binär: mallar, CSS, JS och favicon är inbyggda med
-`go:embed`, och SQLite-drivaren är ren Go (`modernc.org/sqlite`), så
-`CGO_ENABLED=0` räcker och imagen behöver inget mer än `ca-certificates`.
+The server is a single static binary: templates, CSS, JS and favicon are built
+in with `go:embed`, and the SQLite driver is pure Go (`modernc.org/sqlite`), so
+`CGO_ENABLED=0` is enough and the image needs nothing but `ca-certificates`.
 
-### Säkerhet
+Asset URLs carry a hash of the embedded files (`/static/app.js?v=…`), so they
+can be cached hard and a deploy still can't leave anyone on the old CSS or JS.
+Opening a database written by an older version adds any columns it is missing,
+so upgrading in place needs no manual migration.
 
-Lösenord hashas med bcrypt. Sessioner är slumpade 256-bitars tokens i
-HttpOnly-cookies med serversidig utgång. Alla formulär skickar en
-sessionsbunden CSRF-token. Inloggning och registrering är rate-limitade per
-IP. Svaren sätter en CSP som bara tillåter egen CSS/JS — därför finns inga
-inline-styles eller inline-script i mallarna, och inga externa fonter.
+### Security
+
+Passwords are hashed with bcrypt. Sessions are random 256-bit tokens in
+HttpOnly cookies with server-side expiry. Every form carries a session-bound
+CSRF token. Login and registration are rate limited per IP. Responses set a CSP
+that only allows the app's own CSS and JS — which is why there are no inline
+styles or scripts in the templates, and no external fonts.
 
 ## CI/CD
 
-`.github/workflows/ci.yml` kör vid varje push och PR:
+`.github/workflows/ci.yml` runs on every push and pull request:
 
-1. **test** — `gofmt`-koll, `go mod tidy`-koll, `go vet`, `go test -race` med täckning.
-2. **build** — korskompilerar binärer för linux/amd64, linux/arm64 och darwin/arm64.
-3. **image** — bygger imagen för amd64 + arm64, pushar till
-   `ghcr.io/o5ten/cinevote` (inte på PR:er) och rök-testar demoläget i en
-   körande container.
+1. **test** — `gofmt` check, `go mod tidy` check, `go vet`, `go test -race` with coverage.
+2. **build** — cross-compiles binaries for linux/amd64, linux/arm64 and darwin/arm64.
+3. **image** — builds for amd64 + arm64, pushes to `ghcr.io/o5ten/cinevote`
+   (not on pull requests) and smoke-tests demo mode in a running container.
 
-Vilka imagetaggar som skapas:
+Image tags:
 
-| Händelse | Taggar |
+| Event | Tags |
 | --- | --- |
-| push till `main` | `latest`, `main`, `sha-<kort sha>` |
-| tagg `v1.2.3` | `1.2.3`, `1.2`, `sha-<kort sha>` |
-| pull request | `pr-<nummer>`, `sha-<kort sha>` — byggs men pushas inte |
+| push to `main` | `latest`, `main`, `sha-<short sha>` |
+| tag `v1.2.3` | `1.2.3`, `1.2`, `sha-<short sha>` |
+| pull request | `pr-<number>`, `sha-<short sha>` — built, not pushed |
 
-`:latest` följer alltså alltid `main`, aldrig en versionstagg. Vill du att en
-release ska flytta `latest` istället, byt `enable={{is_default_branch}}` mot
-`enable={{is_default_branch}} || startsWith(github.ref, 'refs/tags/v')` i
+So `:latest` always follows `main`, never a version tag. To make releases move
+`latest` instead, change `enable={{is_default_branch}}` to
+`enable={{is_default_branch}} || startsWith(github.ref, 'refs/tags/v')` in
 `.github/workflows/ci.yml`.
 
-Första pushen till `main` skapar paketet i GHCR. Det blir privat som standard —
-gör det publikt under **Packages → cinevote → Package settings** om vem som
-helst ska kunna `docker pull`:a det.
+The first push to `main` creates the GHCR package. It is private by default —
+make it public under **Packages → cinevote → Package settings** if anyone should
+be able to `docker pull` it.
 
-## Licens
+## License
 
 MIT.

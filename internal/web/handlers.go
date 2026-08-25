@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/o5ten/cinevote/internal/auth"
+	"github.com/o5ten/cinevote/internal/browse"
 	"github.com/o5ten/cinevote/internal/poster"
 	"github.com/o5ten/cinevote/internal/store"
 )
@@ -30,6 +31,15 @@ var yearRe = regexp.MustCompile(`^(18|19|20|21)\d{2}$`)
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+// notFound renders the error page for a request that routed fine but pointed
+// at something that is not there.
+func (s *Server) notFound(w http.ResponseWriter, r *http.Request, heading, message string) {
+	s.render(w, r, http.StatusNotFound, "error.html", map[string]any{
+		"Heading": heading,
+		"Message": message,
+	})
 }
 
 func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +75,34 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	left := s.cfg.MaxVotes - used
+	if left < 0 {
+		left = 0
+	}
+
+	query := browse.ParseQuery(r.URL.Query())
+	data := map[string]any{
+		"Title":     "Filmröstning",
+		"VotesUsed": used,
+		"VotesLeft": left,
+		"People":    people,
+		"Query":     query,
+		"Filtering": query.Active(),
+		// Dropdown contents come from the board itself, so they only ever
+		// offer filters that can actually match something.
+		"AllGenres":    browse.Genres(movies),
+		"AllDirectors": browse.Directors(movies),
+		"TotalMovies":  len(movies),
+	}
+
+	// A filtered board is one flat, sorted list: the podium is about the true
+	// vote ranking, and showing it next to a filtered list would be a lie.
+	if query.Active() {
+		data["Results"] = browse.Apply(movies, query)
+		s.render(w, r, http.StatusOK, "index.html", data)
+		return
+	}
+
 	// Movies() sorts unseen-first by vote count, so slicing is enough. A movie
 	// with no votes never gets the podium treatment, however few films exist.
 	var top, rest, seen []store.Movie
@@ -78,22 +116,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			rest = append(rest, m)
 		}
 	}
-
-	left := s.cfg.MaxVotes - used
-	if left < 0 {
-		left = 0
-	}
-
-	s.render(w, r, http.StatusOK, "index.html", map[string]any{
-		"Title":     "Filmröstning",
-		"Top":       top,
-		"Rest":      rest,
-		"Seen":      seen,
-		"VotesUsed": used,
-		"VotesLeft": left,
-		"People":    people,
-		"Winner":    firstMovie(top),
-	})
+	data["Top"] = top
+	data["Rest"] = rest
+	data["Seen"] = seen
+	data["Winner"] = firstMovie(top)
+	s.render(w, r, http.StatusOK, "index.html", data)
 }
 
 func firstMovie(m []store.Movie) *store.Movie {
@@ -302,10 +329,10 @@ func (s *Server) handleAddMovie(w http.ResponseWriter, r *http.Request) {
 		overview = string([]rune(overview)[:maxOverviewLen])
 	}
 
-	// Look the film up so poster, rating and runtime come from OMDb rather
-	// than from the browser: by id when the user picked a search hit, by title
-	// otherwise. Failure here is not fatal — the suggestion still goes in.
-	meta := s.lookup(ctx, sourceID, title, posterURL)
+	// Look the film up so poster, rating, director and runtime come from OMDb
+	// rather than from the browser: by id when the user picked a search hit, by
+	// title otherwise. Failure here is not fatal — the suggestion still goes in.
+	meta := s.lookup(ctx, sourceID, title)
 
 	newMovie := store.NewMovie{
 		Title:       title,
@@ -320,6 +347,8 @@ func (s *Server) handleAddMovie(w http.ResponseWriter, r *http.Request) {
 		newMovie.Rating = meta.Rating
 		newMovie.Runtime = meta.Runtime
 		newMovie.Genres = meta.Genres
+		newMovie.Director = meta.Director
+		newMovie.Actors = meta.Actors
 		// The typed title wins (someone may prefer the Swedish one), but
 		// anything the user left blank gets filled in.
 		if newMovie.PosterURL == "" {
@@ -333,7 +362,8 @@ func (s *Server) handleAddMovie(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := s.store.AddMovie(ctx, newMovie); err != nil {
+	id, err := s.store.AddMovie(ctx, newMovie)
+	if err != nil {
 		if errors.Is(err, store.ErrDuplicateFilm) {
 			s.redirectFlash(w, r, "error", title+" ligger redan på listan.")
 			return
@@ -341,13 +371,13 @@ func (s *Server) handleAddMovie(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, "kunde inte lägga till filmen", err)
 		return
 	}
-	s.redirectFlash(w, r, "ok", title+" är tillagd. Glöm inte att rösta!")
+	s.redirectToMovie(w, r, "ok", title+" är tillagd. Glöm inte att rösta!", id)
 }
 
-// lookup resolves metadata for a new suggestion. It prefers the id the search
-// box supplied; with no id it only guesses from the title when the user has
-// not pasted their own poster, so a manual entry is never second-guessed.
-func (s *Server) lookup(ctx context.Context, sourceID, title, manualPoster string) *poster.Result {
+// lookup resolves metadata for a new suggestion, preferring the id the search
+// box supplied and falling back to the title. Whatever the user typed still
+// wins — the caller only fills in the fields they left blank.
+func (s *Server) lookup(ctx context.Context, sourceID, title string) *poster.Result {
 	if !s.posters.Enabled() {
 		return nil
 	}
@@ -361,9 +391,6 @@ func (s *Server) lookup(ctx context.Context, sourceID, title, manualPoster strin
 			return nil
 		}
 		return res
-	}
-	if manualPoster != "" {
-		return nil
 	}
 	res, err := s.posters.Best(lookupCtx, title)
 	if err != nil {
@@ -385,13 +412,13 @@ func (s *Server) handleVote(w http.ResponseWriter, r *http.Request) {
 	switch err := s.store.Vote(ctx, user.ID, id); {
 	case err == nil:
 		left, _ := s.store.VotesLeft(ctx, user.ID)
-		s.redirectFlash(w, r, "ok", "Röst lagd. "+plural(left)+" kvar.")
+		s.redirectToMovie(w, r, "ok", "Röst lagd. "+plural(left)+" kvar.", id)
 	case errors.Is(err, store.ErrNoVotesLeft):
-		s.redirectFlash(w, r, "error", "Dina röster är slut. Ta tillbaka en röst först.")
+		s.redirectToMovie(w, r, "error", "Dina röster är slut. Ta tillbaka en röst först.", id)
 	case errors.Is(err, store.ErrAlreadyVoted):
-		s.redirectFlash(w, r, "error", "Du har redan röstat på den filmen.")
+		s.redirectToMovie(w, r, "error", "Du har redan röstat på den filmen.", id)
 	case errors.Is(err, store.ErrMovieSeen):
-		s.redirectFlash(w, r, "error", "Filmen är redan sedd.")
+		s.redirectToMovie(w, r, "error", "Filmen är redan sedd.", id)
 	case errors.Is(err, store.ErrNotFound):
 		s.redirectFlash(w, r, "error", "Filmen finns inte längre.")
 	default:
@@ -411,9 +438,9 @@ func (s *Server) handleUnvote(w http.ResponseWriter, r *http.Request) {
 	switch err := s.store.Unvote(ctx, user.ID, id); {
 	case err == nil:
 		left, _ := s.store.VotesLeft(ctx, user.ID)
-		s.redirectFlash(w, r, "ok", "Rösten är tillbaka. Du har "+plural(left)+".")
+		s.redirectToMovie(w, r, "ok", "Rösten är tillbaka. Du har "+plural(left)+".", id)
 	case errors.Is(err, store.ErrNotFound):
-		s.redirectFlash(w, r, "error", "Ingen röst att ta tillbaka där.")
+		s.redirectToMovie(w, r, "error", "Ingen röst att ta tillbaka där.", id)
 	default:
 		s.fail(w, r, "kunde inte ta tillbaka rösten", err)
 	}
@@ -440,10 +467,10 @@ func (s *Server) handleSetSeen(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if seen {
-		s.redirectFlash(w, r, "ok", movie.Title+" är markerad som sedd. "+
-			plural(movie.Votes)+" tillbaka till "+voters(movie.Votes)+".")
+		s.redirectToMovie(w, r, "ok", movie.Title+" är markerad som sedd. "+
+			plural(movie.Votes)+" tillbaka till "+voters(movie.Votes)+".", id)
 	} else {
-		s.redirectFlash(w, r, "ok", movie.Title+" är tillbaka i röstningen.")
+		s.redirectToMovie(w, r, "ok", movie.Title+" är tillbaka i röstningen.", id)
 	}
 }
 
@@ -486,6 +513,95 @@ func (s *Server) handleDeleteMovie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.redirectFlash(w, r, "ok", movie.Title+" är borttagen.")
+}
+
+/* -------------------------------------------------------------- similar --- */
+
+// handleSimilar answers "what else is like this one?" in two parts: the films
+// already on the board that resemble it, and — when a TMDB key is configured —
+// recommendations for films nobody has suggested yet.
+func (s *Server) handleSimilar(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user := userFrom(ctx)
+
+	id, err := pathID(r)
+	if err != nil {
+		s.notFound(w, r, "Okänd film", "Länken pekar på en film som inte finns.")
+		return
+	}
+
+	movies, err := s.store.Movies(ctx, user.ID)
+	if err != nil {
+		s.fail(w, r, "kunde inte hämta filmerna", err)
+		return
+	}
+	// Take the target from the same list, so it carries the viewer's own vote
+	// state and its current rank.
+	var target *store.Movie
+	for i := range movies {
+		if movies[i].ID == id {
+			target = &movies[i]
+			break
+		}
+	}
+	if target == nil {
+		s.notFound(w, r, "Filmen finns inte", "Någon kan ha tagit bort den.")
+		return
+	}
+
+	left, err := s.store.VotesLeft(ctx, user.ID)
+	if err != nil {
+		s.fail(w, r, "kunde inte räkna dina röster", err)
+		return
+	}
+
+	data := map[string]any{
+		"Title":      "Liknande " + target.Title,
+		"Movie":      *target,
+		"Matches":    browse.Similar(*target, movies, 6),
+		"VotesLeft":  left,
+		"TMDBKeyURL": TMDBKeyURL,
+	}
+
+	if s.posters.RecommendationsEnabled() {
+		recCtx, cancel := context.WithTimeout(ctx, lookupTimeout)
+		defer cancel()
+
+		found, err := s.posters.Recommendations(recCtx, target.IMDbID, target.TMDBID, 12)
+		if err != nil {
+			s.log.Warn("recommendation lookup failed", "movie", target.Title, "err", err)
+			data["RecommendError"] = true
+		} else {
+			data["Recommendations"] = withoutKnown(found, movies, 8)
+		}
+	}
+
+	s.render(w, r, http.StatusOK, "similar.html", data)
+}
+
+// withoutKnown drops recommendations that are already on the board — suggesting
+// a film that is right there would be noise.
+func withoutKnown(found []poster.Result, known []store.Movie, limit int) []poster.Result {
+	byIMDb := map[string]bool{}
+	byTitle := map[string]bool{}
+	for _, m := range known {
+		if m.IMDbID != "" {
+			byIMDb[m.IMDbID] = true
+		}
+		byTitle[strings.ToLower(m.Title)] = true
+	}
+
+	out := make([]poster.Result, 0, limit)
+	for _, res := range found {
+		if len(out) == limit {
+			break
+		}
+		if (res.IMDbID != "" && byIMDb[res.IMDbID]) || byTitle[strings.ToLower(res.Title)] {
+			continue
+		}
+		out = append(out, res)
+	}
+	return out
 }
 
 /* ---------------------------------------------------------------- admin --- */
@@ -575,15 +691,39 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 
 /* -------------------------------------------------------------- helpers --- */
 
-// redirectFlash is the post/redirect/get tail every form action shares.
+// redirectFlash is the post/redirect/get tail every form action shares. It
+// returns to the page the form was on, with no anchor.
 func (s *Server) redirectFlash(w http.ResponseWriter, r *http.Request, level, msg string) {
 	s.setFlash(w, level, msg)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, returnTarget(r), http.StatusSeeOther)
+}
+
+// redirectToMovie is the same, but anchored to one film. Voting used to send
+// the reader back to the top of a long board; landing on the card they just
+// acted on keeps their place, and works without JavaScript.
+func (s *Server) redirectToMovie(w http.ResponseWriter, r *http.Request, level, msg string, movieID int64) {
+	s.setFlash(w, level, msg)
+	http.Redirect(w, r, returnTarget(r)+"#"+movieAnchor(movieID), http.StatusSeeOther)
 }
 
 func (s *Server) adminFlash(w http.ResponseWriter, r *http.Request, level, msg string) {
 	s.setFlash(w, level, msg)
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+// movieAnchor is the element id a film's card and admin row carry.
+func movieAnchor(movieID int64) string {
+	return "film-" + strconv.FormatInt(movieID, 10)
+}
+
+// returnTarget is the page a form wants to go back to. Only the app's own two
+// boards are accepted, so a crafted "return" value cannot bounce anyone
+// somewhere else.
+func returnTarget(r *http.Request) string {
+	if r.FormValue("return") == "/admin" {
+		return "/admin"
+	}
+	return "/"
 }
 
 // fail logs the real error and shows the user a short explanation.

@@ -40,7 +40,7 @@ docker-run: docker
 
 ## docker-demo: run the demo in a container, no env file, no volume
 docker-demo: docker
-	docker run --rm -p 8080:8080 -e CINEVOTE_DB= $(IMAGE):dev -demo
+	docker run --rm -p 8080:8080 $(IMAGE):dev -demo
 
 ## compose: bring the stack up in the background
 compose:

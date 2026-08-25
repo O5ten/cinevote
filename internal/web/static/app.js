@@ -9,41 +9,86 @@
   var button = document.getElementById("search-btn");
   var box = document.getElementById("search-results");
 
-  if (form && button && box) {
+  if (form && box) {
+    // Search fires on its own once typing pauses; the button is just a way to
+    // skip the wait.
+    var DEBOUNCE_MS = 600;
+    var MIN_QUERY = 2;
+
     var title = document.getElementById("title");
     var year = document.getElementById("year");
     var posterURL = document.getElementById("poster_url");
     var overview = document.getElementById("overview");
     var sourceID = document.getElementById("source-id");
-    var label = button.dataset.label || "filmdatabasen";
-    var idle = button.textContent;
+    var label = (button && button.dataset.label) || "filmdatabasen";
+    var idle = button ? button.textContent : "";
 
-    // Picking a result stops being valid as soon as the title is edited by
-    // hand, otherwise we would attach the wrong film's poster.
+    var timer = null;
+    var inFlight = null;
+    var lastQuery = "";
+
     title.addEventListener("input", function () {
+      // Picking a result stops being valid as soon as the title is edited by
+      // hand, otherwise we would attach the wrong film's poster.
       sourceID.value = "";
+      schedule();
     });
 
-    button.addEventListener("click", function () {
+    // Enter in the title field searches rather than submitting a half-filled
+    // form, as long as we have something to search with.
+    title.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && title.value.trim().length >= MIN_QUERY && !sourceID.value) {
+        event.preventDefault();
+        searchNow();
+      }
+    });
+
+    if (button) {
+      button.addEventListener("click", searchNow);
+    }
+
+    function schedule() {
+      window.clearTimeout(timer);
+      var query = title.value.trim();
+      if (query.length < MIN_QUERY) {
+        hide();
+        return;
+      }
+      if (query === lastQuery) return;
+      timer = window.setTimeout(function () {
+        run(query);
+      }, DEBOUNCE_MS);
+    }
+
+    function searchNow() {
+      window.clearTimeout(timer);
       var query = title.value.trim();
       if (!query) {
         title.focus();
         return;
       }
+      run(query);
+    }
 
-      button.disabled = true;
-      button.textContent = "Söker…";
-      message("Söker på " + label + "…");
+    function run(query) {
+      lastQuery = query;
+
+      // A slow answer for an older query must not overwrite a newer one.
+      if (inFlight) inFlight.abort();
+      inFlight = new AbortController();
+      var request = inFlight;
+
+      busy(true);
+      message("Söker på " + label + " efter \u201d" + query + "\u201d…");
 
       fetch("/api/search?q=" + encodeURIComponent(query), {
         headers: { Accept: "application/json" },
-        credentials: "same-origin"
+        credentials: "same-origin",
+        signal: request.signal
       })
         .then(function (resp) {
           return resp.json().then(function (body) {
-            if (!resp.ok) {
-              throw new Error(body.error || "Sökningen misslyckades.");
-            }
+            if (!resp.ok) throw new Error(body.error || "Sökningen misslyckades.");
             return body;
           });
         })
@@ -51,16 +96,39 @@
           render(body.results || []);
         })
         .catch(function (err) {
+          if (err.name === "AbortError") return; // superseded by a newer search
           message(err.message || "Sökningen misslyckades. Fyll i uppgifterna själv.");
         })
         .finally(function () {
-          button.disabled = false;
-          button.textContent = idle;
+          if (inFlight === request) {
+            inFlight = null;
+            busy(false);
+          }
         });
-    });
+    }
+
+    function busy(on) {
+      if (!button) return;
+      button.disabled = on;
+      button.textContent = on ? "Söker…" : idle;
+    }
+
+    function hide() {
+      box.hidden = true;
+      box.textContent = "";
+      open(false);
+    }
+
+    // open toggles the "attached dropdown" look and the combobox state.
+    function open(isOpen) {
+      var wrap = box.closest(".searchfield");
+      if (wrap) wrap.classList.toggle("open", isOpen);
+      title.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    }
 
     function message(text) {
       box.hidden = false;
+      open(true);
       box.textContent = "";
       var p = document.createElement("p");
       p.className = "results-msg";
@@ -70,6 +138,7 @@
 
     function render(results) {
       box.hidden = false;
+      open(true);
       box.textContent = "";
 
       if (!results.length) {
@@ -78,25 +147,12 @@
       }
 
       results.forEach(function (movie) {
-        var card = document.createElement("button");
-        card.type = "button";
-        card.className = "result";
-        card.title = movie.title + (movie.year ? " (" + movie.year + ")" : "");
+        var row = document.createElement("button");
+        row.type = "button";
+        row.className = "result";
+        row.title = movie.title + (movie.year ? " (" + movie.year + ")" : "");
 
-        if (movie.poster_url) {
-          var img = document.createElement("img");
-          img.className = "poster";
-          img.src = movie.poster_url;
-          img.alt = "Filmposter för " + movie.title;
-          img.loading = "lazy";
-          img.referrerPolicy = "no-referrer";
-          card.appendChild(img);
-        } else {
-          var blank = document.createElement("div");
-          blank.className = "poster poster-empty ph-" + (movie.title.length % 6);
-          blank.appendChild(document.createTextNode(initials(movie.title)));
-          card.appendChild(blank);
-        }
+        row.appendChild(thumbnail(movie));
 
         var wrap = document.createElement("span");
         wrap.className = "result-label";
@@ -108,28 +164,70 @@
 
         var sub = document.createElement("span");
         sub.className = "result-year";
-        sub.textContent = [movie.year, movie.rating ? "★ " + movie.rating : ""]
+        sub.textContent = [movie.year, movie.rating ? "\u2605 " + movie.rating : "", movie.genres]
           .filter(Boolean)
           .join(" · ");
         wrap.appendChild(sub);
 
-        card.appendChild(wrap);
-        card.addEventListener("click", function () {
+        row.appendChild(wrap);
+        row.addEventListener("click", function () {
           select(movie);
         });
-        box.appendChild(card);
+        box.appendChild(row);
       });
     }
+
+    // Escape closes the list, and so does clicking anywhere outside it — the
+    // usual way out of an autocomplete.
+    title.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && !box.hidden) {
+        event.stopPropagation();
+        hide();
+      }
+    });
+    document.addEventListener("click", function (event) {
+      if (box.hidden) return;
+      var wrap = box.closest(".searchfield");
+      if (wrap && !wrap.contains(event.target)) hide();
+    });
 
     // select fills the form from a search hit. source_id is what the server
     // re-resolves against OMDb, so the browser cannot invent metadata.
     function select(movie) {
+      window.clearTimeout(timer);
       sourceID.value = movie.imdb_id || (movie.tmdb_id ? String(movie.tmdb_id) : "");
       title.value = movie.title;
+      lastQuery = movie.title.trim();
       if (movie.year) year.value = movie.year;
       if (movie.poster_url) posterURL.value = movie.poster_url;
       if (movie.overview) overview.value = movie.overview;
       message("Valt: " + movie.title + (movie.year ? " (" + movie.year + ")" : "") + ".");
+    }
+
+    // thumbnail is the poster, or a coloured placeholder — including when the
+    // poster URL turns out to be dead, which OMDb has plenty of.
+    function thumbnail(movie) {
+      if (!movie.poster_url) return placeholder(movie.title);
+
+      var img = document.createElement("img");
+      img.className = "poster";
+      img.src = movie.poster_url;
+      img.alt = "";
+      img.loading = "lazy";
+      img.referrerPolicy = "no-referrer";
+      img.addEventListener("error", function () {
+        var fallback = placeholder(movie.title);
+        if (img.parentNode) img.parentNode.replaceChild(fallback, img);
+      });
+      return img;
+    }
+
+    function placeholder(title) {
+      var blank = document.createElement("div");
+      blank.className = "poster poster-empty ph-" + (title.length % 6);
+      blank.setAttribute("aria-hidden", "true");
+      blank.appendChild(document.createTextNode(initials(title)));
+      return blank;
     }
 
     function initials(text) {

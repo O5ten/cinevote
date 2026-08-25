@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -357,4 +358,75 @@ func TestDeleteUserFreesVotes(t *testing.T) {
 	if m.SuggestedBy != "Ada" {
 		t.Fatalf("suggested by = %q, want Ada", m.SuggestedBy)
 	}
+}
+
+// A database created by an earlier version is missing the columns added since.
+// CREATE TABLE IF NOT EXISTS leaves it alone, so opening it has to patch the
+// schema rather than fail on the first query.
+func TestOpenMigratesAnOlderSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	// Stand up the movies table as an early build had it: no imdb_id, rating,
+	// runtime, genres, director or actors.
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Exec(`
+CREATE TABLE movies (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	title        TEXT    NOT NULL,
+	title_ci     TEXT    NOT NULL,
+	year         TEXT    NOT NULL DEFAULT '',
+	poster_url   TEXT    NOT NULL DEFAULT '',
+	overview     TEXT    NOT NULL DEFAULT '',
+	tmdb_id      INTEGER,
+	suggested_by INTEGER,
+	seen         INTEGER NOT NULL DEFAULT 0,
+	seen_at      INTEGER,
+	created_at   INTEGER NOT NULL
+);
+INSERT INTO movies (title, title_ci, year, created_at) VALUES ('Alien', 'alien', '1979', 0);`); err != nil {
+		t.Fatalf("build the old schema: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open a database from an older version: %v", err)
+	}
+	defer st.Close()
+
+	ctx := context.Background()
+	movies, err := st.Movies(ctx, 0)
+	if err != nil {
+		t.Fatalf("query after migration: %v", err)
+	}
+	if len(movies) != 1 || movies[0].Title != "Alien" {
+		t.Fatalf("existing row lost: %+v", movies)
+	}
+	if movies[0].Director != "" || movies[0].Rating != "" {
+		t.Errorf("new columns should default to empty, got %+v", movies[0])
+	}
+
+	// And the new columns are writable.
+	u := mustUser(t, st, "Ada")
+	if _, err := st.AddMovie(ctx, NewMovie{
+		Title: "Arrival", Rating: "7.9", Director: "Denis Villeneuve",
+		Actors: "Amy Adams", Genres: "Drama", SuggestedBy: u.ID,
+	}); err != nil {
+		t.Fatalf("insert using the added columns: %v", err)
+	}
+
+	// Opening again must be a no-op, not a duplicate-column error.
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	again, err := Open(path)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	again.Close()
 }

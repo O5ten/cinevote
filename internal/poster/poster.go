@@ -15,7 +15,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,6 +43,11 @@ type Result struct {
 	Rating    string `json:"rating"`  // IMDb rating as text, e.g. "8.9"
 	Runtime   string `json:"runtime"` // e.g. "154 min"
 	Genres    string `json:"genres"`  // comma separated
+	Director  string `json:"director"`
+	Actors    string `json:"actors"` // comma separated, a few headline names
+	// RatingVotes is how many people rated it, which is what makes the rating
+	// trustworthy. Not to be confused with votes cast in CineVote itself.
+	RatingVotes int64 `json:"rating_votes"`
 }
 
 // IMDbURL is the public page for a result, or "" when we have no IMDb id.
@@ -66,8 +74,49 @@ var ErrUnsupportedSource = errors.New("unknown poster source")
 
 // Service is the handle the rest of the app uses. A zero Service (or a nil
 // one) is valid and simply disabled.
+//
+// The primary provider answers searches and lookups. TMDB is kept separately
+// whenever a key for it exists, because it is the only backend that can answer
+// "films like this one" — so an OMDb-first setup with a TMDB key gets IMDb
+// metadata and TMDB recommendations at the same time.
 type Service struct {
 	provider Provider
+	tmdb     *TMDB
+	cache    detailCache
+}
+
+// enrichConcurrency caps how many detail lookups one search fires at once —
+// enough to stay quick, few enough to be polite to a free API tier.
+const enrichConcurrency = 4
+
+// detailCache remembers detail lookups for the lifetime of the process. People
+// searching for the same film repeatedly is the common case, and the free OMDb
+// tier has a daily budget worth protecting.
+type detailCache struct {
+	mu      sync.Mutex
+	entries map[string]Result
+}
+
+const detailCacheMax = 512
+
+func (c *detailCache) get(id string) (Result, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	res, ok := c.entries[id]
+	return res, ok
+}
+
+func (c *detailCache) put(id string, res Result) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string]Result, 64)
+	}
+	// Nothing clever: once it is full, start over rather than grow forever.
+	if len(c.entries) >= detailCacheMax {
+		c.entries = make(map[string]Result, 64)
+	}
+	c.entries[id] = res
 }
 
 // New builds the service. source may be "imdb", "tmdb" or "" (auto: IMDb when
@@ -77,30 +126,33 @@ type Service struct {
 func New(source, omdbKey, tmdbKey string) (*Service, error) {
 	omdbKey, tmdbKey = strings.TrimSpace(omdbKey), strings.TrimSpace(tmdbKey)
 
+	svc := &Service{}
+	if tmdbKey != "" {
+		svc.tmdb = NewTMDB(tmdbKey, nil)
+	}
+
 	switch Source(strings.ToLower(strings.TrimSpace(source))) {
 	case SourceIMDb:
-		if omdbKey == "" {
-			return &Service{}, nil
+		if omdbKey != "" {
+			svc.provider = NewOMDb(omdbKey, nil)
 		}
-		return &Service{provider: NewOMDb(omdbKey, nil)}, nil
 	case SourceTMDB:
-		if tmdbKey == "" {
-			return &Service{}, nil
+		if svc.tmdb != nil {
+			svc.provider = svc.tmdb
 		}
-		return &Service{provider: NewTMDB(tmdbKey, nil)}, nil
 	case SourceNone:
-		return &Service{}, nil
+		svc.tmdb = nil
 	case "":
 		switch {
 		case omdbKey != "":
-			return &Service{provider: NewOMDb(omdbKey, nil)}, nil
-		case tmdbKey != "":
-			return &Service{provider: NewTMDB(tmdbKey, nil)}, nil
+			svc.provider = NewOMDb(omdbKey, nil)
+		case svc.tmdb != nil:
+			svc.provider = svc.tmdb
 		}
-		return &Service{}, nil
 	default:
 		return nil, fmt.Errorf("%w: %q (use \"imdb\" or \"tmdb\")", ErrUnsupportedSource, source)
 	}
+	return svc, nil
 }
 
 func (s *Service) Enabled() bool { return s != nil && s.provider != nil }
@@ -132,7 +184,131 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Result
 	if limit <= 0 {
 		limit = 8
 	}
-	return s.provider.Search(ctx, query, limit)
+
+	results, err := s.provider.Search(ctx, query, limit)
+	if err != nil || len(results) == 0 {
+		return results, err
+	}
+	// A search response is thin — OMDb returns no rating at all — so fill the
+	// gaps before ranking, otherwise "best rated first" has nothing to sort on.
+	s.enrich(ctx, results)
+	rankByRating(results, query)
+	return results, nil
+}
+
+// enrich fetches the details a search response leaves out for the entries that
+// are missing a rating. Failures are ignored: a thin result is better than no
+// result, and the cache keeps repeat typing off the API.
+func (s *Service) enrich(ctx context.Context, results []Result) {
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, enrichConcurrency)
+
+	for i := range results {
+		if results[i].Rating != "" {
+			continue
+		}
+		id := results[i].detailID()
+		if id == "" {
+			continue
+		}
+		if cached, ok := s.cache.get(id); ok {
+			results[i] = merge(results[i], cached)
+			continue
+		}
+
+		wg.Add(1)
+		go func(idx int, id string) {
+			defer wg.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+
+			full, err := s.provider.Detail(ctx, id)
+			if err != nil || full == nil {
+				return
+			}
+			s.cache.put(id, *full)
+			results[idx] = merge(results[idx], *full)
+		}(i, id)
+	}
+	wg.Wait()
+}
+
+// merge layers a detail response over a search hit, keeping whatever the search
+// gave us for fields the detail left empty.
+func merge(base, detail Result) Result {
+	out := detail
+	if out.Title == "" {
+		out.Title = base.Title
+	}
+	if out.Year == "" {
+		out.Year = base.Year
+	}
+	if out.PosterURL == "" {
+		out.PosterURL = base.PosterURL
+	}
+	if out.IMDbID == "" {
+		out.IMDbID = base.IMDbID
+	}
+	if out.TMDBID == 0 {
+		out.TMDBID = base.TMDBID
+	}
+	if out.RatingVotes == 0 {
+		out.RatingVotes = base.RatingVotes
+	}
+	return out
+}
+
+// Rating credibility tiers. A high score from a few hundred people says much
+// less than a slightly lower one from a million, and searches for a famous
+// title otherwise surface obscure shorts that happen to share the name.
+const (
+	wellKnownVotes = 25000
+	knownVotes     = 1000
+)
+
+// rankByRating puts the best-reviewed films first, because that is nearly
+// always the one being looked for — but only compares ratings that carry
+// comparable weight. An exact title match wins over everything: someone
+// searching "Dune" wants Dune, not its better-reviewed sequel.
+func rankByRating(results []Result, query string) {
+	want := strings.ToLower(strings.TrimSpace(query))
+	sort.SliceStable(results, func(i, j int) bool {
+		iExact := strings.ToLower(results[i].Title) == want
+		jExact := strings.ToLower(results[j].Title) == want
+		if iExact != jExact {
+			return iExact
+		}
+		if a, b := results[i].credibility(), results[j].credibility(); a != b {
+			return a > b
+		}
+		a, aok := results[i].rating()
+		b, bok := results[j].rating()
+		if aok != bok {
+			return aok // unrated films sink below rated ones
+		}
+		return a > b
+	})
+}
+
+// credibility buckets a film by how many people rated it.
+func (r Result) credibility() int {
+	switch {
+	case r.RatingVotes >= wellKnownVotes:
+		return 2
+	case r.RatingVotes >= knownVotes:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// rating parses the text rating for comparison.
+func (r Result) rating() (float64, bool) {
+	v, err := strconv.ParseFloat(strings.TrimSpace(r.Rating), 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // Detail resolves one candidate by id, used when the user picks a search hit
@@ -142,7 +318,14 @@ func (s *Service) Detail(ctx context.Context, id string) (*Result, error) {
 	if !s.Enabled() || id == "" {
 		return nil, nil
 	}
-	return s.provider.Detail(ctx, id)
+	if cached, ok := s.cache.get(id); ok {
+		return &cached, nil
+	}
+	res, err := s.provider.Detail(ctx, id)
+	if err == nil && res != nil {
+		s.cache.put(id, *res)
+	}
+	return res, err
 }
 
 // Best returns the most likely match for a title, preferring an exact
@@ -175,6 +358,28 @@ func (r Result) detailID() string {
 		return fmt.Sprint(r.TMDBID)
 	}
 	return r.IMDbID
+}
+
+// RecommendationsEnabled reports whether "films like this one" can be
+// answered, which needs a TMDB key.
+func (s *Service) RecommendationsEnabled() bool { return s != nil && s.tmdb != nil }
+
+// Recommendations returns films similar to one we already have, looked up by
+// TMDB id when we know it and by IMDb id otherwise, best-rated first. Returns
+// nothing (without an error) when no TMDB key is configured.
+func (s *Service) Recommendations(ctx context.Context, imdbID string, tmdbID int64, limit int) ([]Result, error) {
+	if !s.RecommendationsEnabled() {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 8
+	}
+	results, err := s.tmdb.Recommendations(ctx, imdbID, tmdbID, limit)
+	if err != nil {
+		return nil, err
+	}
+	rankByRating(results, "")
+	return results, nil
 }
 
 // defaultHTTP is the client both providers use when none is supplied.

@@ -1,13 +1,15 @@
 package demo
 
 // movies is the demo catalogue. Titles, years, IMDb ids, ratings, runtimes,
-// genres, plots and poster URLs were captured from OMDb so the demo looks
-// complete with no API key configured; the posters are hotlinked, so they need
-// internet access to appear but degrade to coloured placeholders without it.
+// genres, directors, cast and plots were captured from OMDb so the demo looks
+// complete — and so the filters and the "liknande filmer" scoring have real
+// data to work on — with no API key configured. Posters are hotlinked, so they
+// need internet access to appear but degrade to coloured placeholders without it.
 //
-// SuggestedBy/Voters/Seen are hand-picked to exercise every state the board
-// can be in: a clear leader, a tie behind it, a film nobody has voted for, a
-// user who has spent every vote, and two films already watched.
+// SuggestedBy/Voters/Seen are hand-picked to exercise every state the board can
+// be in: a clear leader, a tie behind it, a film nobody has voted for, a user
+// who has spent every vote, and two films already watched. Three of the films
+// share a director on purpose, so "liknande filmer" has something to find.
 var movies = []seedMovie{
 	{
 		Title:       "Parasite",
@@ -16,6 +18,8 @@ var movies = []seedMovie{
 		Rating:      "8.5",
 		Runtime:     "132 min",
 		Genres:      "Drama, Thriller",
+		Director:    "Bong Joon Ho",
+		Actors:      "Song Kang-ho, Lee Sun-kyun, Cho Yeo-jeong",
 		Overview:    "Greed and class discrimination threaten the newly formed symbiotic relationship between the wealthy Park family and the destitute Kim clan.",
 		Poster:      "https://m.media-amazon.com/images/M/MV5BYjk1Y2U4MjQtY2ZiNS00OWQyLWI3MmYtZWUwNmRjYWRiNWNhXkEyXkFqcGc@._V1_SX300.jpg",
 		SuggestedBy: anna,
@@ -28,6 +32,8 @@ var movies = []seedMovie{
 		Rating:      "8.0",
 		Runtime:     "164 min",
 		Genres:      "Action, Drama, Mystery",
+		Director:    "Denis Villeneuve",
+		Actors:      "Harrison Ford, Ryan Gosling, Ana de Armas",
 		Overview:    "Young Blade Runner K's discovery of a long-buried secret leads him to track down former Blade Runner Rick Deckard, who's been missing for thirty years.",
 		Poster:      "https://m.media-amazon.com/images/M/MV5BNzA1Njg4NzYxOV5BMl5BanBnXkFtZTgwODk5NjU3MzI@._V1_QL75_UX380_CR0,0,380,562_.jpg",
 		SuggestedBy: anna,
@@ -41,6 +47,8 @@ var movies = []seedMovie{
 		Rating:      "7.9",
 		Runtime:     "116 min",
 		Genres:      "Drama, Mystery, Sci-Fi",
+		Director:    "Denis Villeneuve",
+		Actors:      "Amy Adams, Jeremy Renner, Forest Whitaker",
 		Overview:    "Linguist Louise Banks leads a team of investigators when gigantic spaceships touch down around the world. As nations teeter on the verge of global war, Banks and her crew must find a way to communicate with the extraterrestrial vi...",
 		Poster:      "https://m.media-amazon.com/images/M/MV5BMTExMzU0ODcxNDheQTJeQWpwZ15BbWU4MDE1OTI4MzAy._V1_SX300.jpg",
 		SuggestedBy: bjorn,
@@ -53,6 +61,8 @@ var movies = []seedMovie{
 		Rating:      "8.1",
 		Runtime:     "99 min",
 		Genres:      "Comedy, Drama",
+		Director:    "Wes Anderson",
+		Actors:      "Ralph Fiennes, F. Murray Abraham, Mathieu Amalric",
 		Overview:    "A writer encounters the owner of an aging high-class hotel, who tells him of his early years serving as a lobby boy in the hotel's glorious years under an exceptional concierge.",
 		Poster:      "https://m.media-amazon.com/images/M/MV5BMzM5NjUxOTEyMl5BMl5BanBnXkFtZTgwNjEyMDM0MDE@._V1_QL75_UX380_CR0,0,380,562_.jpg",
 		SuggestedBy: bjorn,
@@ -65,6 +75,8 @@ var movies = []seedMovie{
 		Rating:      "8.1",
 		Runtime:     "120 min",
 		Genres:      "Action, Adventure, Sci-Fi",
+		Director:    "George Miller",
+		Actors:      "Tom Hardy, Charlize Theron, Nicholas Hoult",
 		Overview:    "In a post-apocalyptic wasteland, a woman rebels against a tyrannical ruler in search for her homeland with the aid of a group of female prisoners, a psychotic worshipper and a drifter named Max.",
 		Poster:      "https://m.media-amazon.com/images/M/MV5BZDRkODJhOTgtOTc1OC00NTgzLTk4NjItNDgxZDY4YjlmNDY2XkEyXkFqcGc@._V1_SX300.jpg",
 		SuggestedBy: cissi,
@@ -77,6 +89,8 @@ var movies = []seedMovie{
 		Rating:      "8.6",
 		Runtime:     "124 min",
 		Genres:      "Animation, Adventure, Family",
+		Director:    "Hayao Miyazaki",
+		Actors:      "Miyu Irino, Rumi Hiiragi, Mari Natsuki",
 		Overview:    "During her family's move to the suburbs, a sullen 10-year-old girl wanders into a world ruled by gods, witches and spirits, and where humans are changed into beasts.",
 		Poster:      "https://m.media-amazon.com/images/M/MV5BNTEyNmEwOWUtYzkyOC00ZTQ4LTllZmUtMjk0Y2YwOGUzYjRiXkEyXkFqcGc@._V1_QL75_UX380_CR0,0,380,562_.jpg",
 		SuggestedBy: cissi,
@@ -89,6 +103,8 @@ var movies = []seedMovie{
 		Rating:      "8.5",
 		Runtime:     "106 min",
 		Genres:      "Drama, Music",
+		Director:    "Damien Chazelle",
+		Actors:      "Miles Teller, J.K. Simmons, Melissa Benoist",
 		Overview:    "A promising young drummer enrolls at a cut-throat music conservatory where his dreams of greatness are mentored by an instructor who will stop at nothing to realize a student's potential.",
 		Poster:      "https://m.media-amazon.com/images/M/MV5BMDFjOWFkYzktYzhhMC00NmYyLTkwY2EtYjViMDhmNzg0OGFkXkEyXkFqcGc@._V1_SX300.jpg",
 		SuggestedBy: david,
@@ -102,6 +118,8 @@ var movies = []seedMovie{
 		Rating:      "8.0",
 		Runtime:     "122 min",
 		Genres:      "Drama, Romance",
+		Director:    "Céline Sciamma",
+		Actors:      "Noémie Merlant, Adèle Haenel, Luàna Bajrami",
 		Overview:    "On an isolated island in Brittany at the end of the eighteenth century, a female painter is obliged to paint a wedding portrait of a young woman.",
 		Poster:      "https://m.media-amazon.com/images/M/MV5BZjJlYWJlYmMtNjMyMS00ZDgxLTlmNjAtOTJhMzBiZWM5N2VmXkEyXkFqcGc@._V1_QL75_UY562_CR1,0,380,562_.jpg",
 		SuggestedBy: anna,
@@ -114,6 +132,8 @@ var movies = []seedMovie{
 		Rating:      "8.0",
 		Runtime:     "155 min",
 		Genres:      "Action, Adventure, Drama",
+		Director:    "Denis Villeneuve",
+		Actors:      "Timothée Chalamet, Rebecca Ferguson, Zendaya",
 		Overview:    "Paul Atreides arrives on Arrakis after his father accepts the stewardship of the dangerous planet. However, chaos ensues after a betrayal as forces clash to control melange, a precious resource.",
 		Poster:      "https://m.media-amazon.com/images/M/MV5BNWIyNmU5MGYtZDZmNi00ZjAwLWJlYjgtZTc0ZGIxMDE4ZGYwXkEyXkFqcGc@._V1_QL75_UY562_CR1,0,380,562_.jpg",
 		SuggestedBy: david,
@@ -126,6 +146,8 @@ var movies = []seedMovie{
 		Rating:      "7.7",
 		Runtime:     "139 min",
 		Genres:      "Action, Adventure, Comedy",
+		Director:    "Daniel Kwan, Daniel Scheinert",
+		Actors:      "Michelle Yeoh, Stephanie Hsu, Jamie Lee Curtis",
 		Overview:    "A middle-aged Chinese immigrant is swept up into an insane adventure in which she alone can save existence by exploring other universes and connecting with the lives she could have led.",
 		Poster:      "https://m.media-amazon.com/images/M/MV5BOWNmMzAzZmQtNDQ1NC00Nzk5LTkyMmUtNGI2N2NkOWM4MzEyXkEyXkFqcGc@._V1_QL75_UY562_CR4,0,380,562_.jpg",
 		SuggestedBy: anna,

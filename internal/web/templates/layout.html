@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>{{with .Title}}{{.}} · {{end}}{{.SiteName}}</title>
-<link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/style.css?v={{.AssetVersion}}">
+<link rel="icon" href="/static/favicon.svg?v={{.AssetVersion}}" type="image/svg+xml">
 </head>
 <body>
 <div class="aurora" aria-hidden="true"></div>
@@ -33,7 +33,7 @@
 {{if .Demo}}
 <aside class="demobar">
   <span class="demotag">Demo</span>
-  <span>Påhittad data. Alla konton har lösenordet <code>{{.DemoPassword}}</code>{{if .DemoEphemeral}}, och allt nollställs när servern startas om{{else}}, och ändringarna sparas i databasen{{end}}.</span>
+  <span>Påhittad data. Alla konton har lösenordet <code>{{.DemoPassword}}</code>, och allt nollställs när servern startas om.</span>
   {{if not .LookupEnabled}}
   <span class="demohint">Vill du söka fram egna filmer? Hämta en gratis API-nyckel på
     <a href="{{.OMDbKeyURL}}" target="_blank" rel="noopener noreferrer">omdbapi.com/apikey.aspx</a>
@@ -55,7 +55,7 @@
   {{if .LookupSource}}<span>Filmdata från {{.LookupSource}}</span>{{end}}
 </footer>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={{.AssetVersion}}"></script>
 </body>
 </html>
 {{end}}
@@ -73,7 +73,7 @@
      page data so we can reach .CSRF and .User. */}}
 {{define "card"}}
 {{$m := .M}}{{$root := .Root}}{{$variant := .Variant}}
-<article class="card card-{{$variant}}{{if $m.VotedByMe}} card-voted{{end}}">
+<article id="film-{{$m.ID}}" class="card card-{{$variant}}{{if $m.VotedByMe}} card-voted{{end}}">
   <div class="card-art">
     {{template "poster" $m}}
     {{if and (eq $variant "top") (medal $m.Rank)}}<span class="rank" title="Plats {{$m.Rank}}">{{medal $m.Rank}}</span>{{end}}
@@ -91,6 +91,7 @@
       {{with $m.Runtime}}<span class="chip">{{.}}</span>{{end}}
       {{with $m.Genres}}<span class="chip chip-muted">{{.}}</span>{{end}}
     </div>
+    {{with $m.Director}}<p class="credits">Regi: <a href="/?director={{. | urlquery}}">{{.}}</a></p>{{end}}
 
     {{if and $m.Overview (ne $variant "seen")}}<p class="overview">{{$m.Overview}}</p>{{end}}
 
@@ -101,7 +102,10 @@
 
     <div class="card-foot">
       <span class="byline">{{with $m.SuggestedBy}}Föreslagen av {{.}}{{else}}Föreslagen av en borttagen användare{{end}}</span>
-      {{with $m.IMDbURL}}<a class="imdb" href="{{.}}" target="_blank" rel="noopener noreferrer">IMDb ↗</a>{{end}}
+      <span class="foot-links">
+        <a class="similar-link" href="/movies/{{$m.ID}}/similar">Liknande</a>
+        {{with $m.IMDbURL}}<a class="imdb" href="{{.}}" target="_blank" rel="noopener noreferrer">IMDb ↗</a>{{end}}
+      </span>
     </div>
 
     <div class="actions">

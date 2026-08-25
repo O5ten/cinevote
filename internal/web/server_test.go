@@ -554,6 +554,179 @@ func TestOMDbKeyLinkShownWhenLookupIsOff(t *testing.T) {
 	mustContain(t, body, "omdbapi.com/apikey.aspx", "readable link text")
 }
 
+// addMovieWith puts a film on the board with metadata the filters can bite on,
+// bypassing the form so the test does not need a metadata provider.
+func (a *app) seedMovie(m store.NewMovie) int64 {
+	a.t.Helper()
+	if m.SuggestedBy == 0 {
+		user, err := a.store.UserByUsername(context.Background(), "Ada")
+		if err != nil {
+			a.t.Fatal(err)
+		}
+		m.SuggestedBy = user.ID
+	}
+	id, err := a.store.AddMovie(context.Background(), m)
+	if err != nil {
+		a.t.Fatalf("seed movie %s: %v", m.Title, err)
+	}
+	return id
+}
+
+func filterApp(t *testing.T) (*app, *client) {
+	t.Helper()
+	a := newApp(t, nil)
+	ada := a.client()
+	ada.register("Ada", "hunter2hunter2")
+
+	a.seedMovie(store.NewMovie{
+		Title: "Dune: Part One", Year: "2021", Rating: "8.0", IMDbID: "tt1160419",
+		Genres: "Action, Adventure, Drama", Director: "Denis Villeneuve",
+		Actors: "Timothée Chalamet, Rebecca Ferguson, Zendaya",
+	})
+	a.seedMovie(store.NewMovie{
+		Title: "Blade Runner 2049", Year: "2017", Rating: "8.1", IMDbID: "tt1856101",
+		Genres: "Action, Drama, Mystery", Director: "Denis Villeneuve",
+		Actors: "Ryan Gosling, Harrison Ford, Ana de Armas",
+	})
+	a.seedMovie(store.NewMovie{
+		Title: "The Grand Budapest Hotel", Year: "2014", Rating: "8.1",
+		Genres: "Comedy, Drama", Director: "Wes Anderson",
+		Actors: "Ralph Fiennes, F. Murray Abraham",
+	})
+	a.seedMovie(store.NewMovie{
+		Title: "Sharknado", Year: "2013", Rating: "3.3",
+		Genres: "Action, Comedy, Horror", Director: "Anthony C. Ferrante",
+		Actors: "Ian Ziering, Tara Reid",
+	})
+	return a, ada
+}
+
+func TestBoardFilters(t *testing.T) {
+	a, ada := filterApp(t)
+	_ = a
+
+	cases := []struct {
+		name     string
+		path     string
+		want     []string
+		unwanted []string
+	}{
+		{
+			name: "genre", path: "/?genre=Mystery",
+			want: []string{"Blade Runner 2049"}, unwanted: []string{"Sharknado", "The Grand Budapest Hotel"},
+		},
+		{
+			name: "director", path: "/?director=Denis+Villeneuve",
+			want: []string{"Dune: Part One", "Blade Runner 2049"}, unwanted: []string{"Sharknado"},
+		},
+		{
+			name: "minimum rating", path: "/?min_rating=8",
+			want: []string{"Dune: Part One", "Blade Runner 2049"}, unwanted: []string{"Sharknado"},
+		},
+		{
+			name: "free text over cast", path: "/?q=gosling",
+			want: []string{"Blade Runner 2049"}, unwanted: []string{"Dune: Part One"},
+		},
+		{
+			name: "free text over title", path: "/?q=budapest",
+			want: []string{"The Grand Budapest Hotel"}, unwanted: []string{"Sharknado"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := ada.get(tc.path)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d", status)
+			}
+			mustContain(t, body, "Träffar", "filtered heading")
+			for _, want := range tc.want {
+				mustContain(t, body, want, tc.name+" should match")
+			}
+			for _, unwanted := range tc.unwanted {
+				if strings.Contains(body, unwanted) {
+					t.Errorf("%s: %q should have been filtered out", tc.name, unwanted)
+				}
+			}
+			// A filtered board drops the podium: those ranks describe the whole
+			// list, not the filtered slice.
+			if strings.Contains(body, "de 3 mest röstade") {
+				t.Error("the podium should be hidden while filtering")
+			}
+		})
+	}
+}
+
+func TestBoardSorting(t *testing.T) {
+	_, ada := filterApp(t)
+
+	_, body := ada.get("/?sort=title")
+	dune := strings.Index(body, "Dune: Part One")
+	blade := strings.Index(body, "Blade Runner 2049")
+	if blade < 0 || dune < 0 || blade > dune {
+		t.Error("sort=title should put Blade Runner before Dune")
+	}
+
+	_, body = ada.get("/?sort=rating")
+	if i, j := strings.Index(body, "Blade Runner 2049"), strings.Index(body, "Sharknado"); i < 0 || j < 0 || i > j {
+		t.Error("sort=rating should put the 8.1 film before the 3.3 one")
+	}
+}
+
+func TestUnfilteredBoardKeepsThePodium(t *testing.T) {
+	_, ada := filterApp(t)
+	_, body := ada.get("/")
+	if strings.Contains(body, "Träffar") {
+		t.Error("an unfiltered board should not render the filtered view")
+	}
+	mustContain(t, body, "Sök i listan", "filter bar is always available")
+}
+
+func TestFilterWithNoMatchesExplainsItself(t *testing.T) {
+	_, ada := filterApp(t)
+	_, body := ada.get("/?q=ingenting-alls")
+	mustContain(t, body, "Inga filmer matchar filtret", "empty filter result")
+}
+
+func TestSimilarPage(t *testing.T) {
+	a, ada := filterApp(t)
+
+	movies, err := a.store.Movies(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dune int64
+	for _, m := range movies {
+		if m.Title == "Dune: Part One" {
+			dune = m.ID
+		}
+	}
+
+	status, body := ada.get("/movies/" + itoa64(dune) + "/similar")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d", status)
+	}
+	mustContain(t, body, "Liknande filmer", "page heading")
+	mustContain(t, body, "Blade Runner 2049", "same-director match")
+	mustContain(t, body, "Samma regissör", "the reason is spelled out")
+	if strings.Contains(body, "Sharknado") {
+		t.Error("a film with nothing in common should not be suggested")
+	}
+
+	// Without a TMDB key the page says how to enable outside tips instead of
+	// pretending there are none.
+	mustContain(t, body, TMDBKeyURL, "how to enable recommendations")
+}
+
+func TestSimilarPageForUnknownMovie(t *testing.T) {
+	_, ada := filterApp(t)
+	status, body := ada.get("/movies/9999/similar")
+	if status != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", status)
+	}
+	mustContain(t, body, "Filmen finns inte", "missing movie")
+}
+
 func TestUnknownPathIs404(t *testing.T) {
 	a := newApp(t, nil)
 	status, body := a.client().get("/no-such-page")
@@ -599,4 +772,43 @@ func section(body, start, end string) string {
 		return rest[:j]
 	}
 	return rest
+}
+
+// Assets are served under a content-hashed URL, so a deploy cannot leave
+// browsers running last version's CSS and JavaScript.
+func TestAssetURLsAreVersioned(t *testing.T) {
+	a := newApp(t, nil)
+	c := a.client()
+	c.register("Ada", "hunter2hunter2")
+
+	_, body := c.get("/")
+	matches := regexp.MustCompile(`/static/(style\.css|app\.js)\?v=([a-f0-9]{12})`).FindAllStringSubmatch(body, -1)
+	if len(matches) < 2 {
+		t.Fatalf("expected versioned css and js URLs, found %d", len(matches))
+	}
+	version := matches[0][2]
+	for _, m := range matches {
+		if m[2] != version {
+			t.Errorf("assets carry different versions: %q and %q", version, m[2])
+		}
+	}
+
+	// A versioned URL may be cached hard; an unversioned one must revalidate.
+	resp, err := a.client().http.Get(a.ts.URL + "/static/app.js?v=" + version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Cache-Control"); !strings.Contains(got, "immutable") {
+		t.Errorf("versioned asset Cache-Control = %q, want it immutable", got)
+	}
+
+	plain, err := a.client().http.Get(a.ts.URL + "/static/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Body.Close()
+	if got := plain.Header.Get("Cache-Control"); !strings.Contains(got, "must-revalidate") {
+		t.Errorf("unversioned asset Cache-Control = %q, want revalidation", got)
+	}
 }

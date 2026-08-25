@@ -138,8 +138,7 @@ jobs:
       - name: Smoke test the image in demo mode
         run: |
           docker build -t cinevote:smoke .
-          docker run -d --name cinevote-smoke -p 8080:8080 \
-            -e CINEVOTE_DB= cinevote:smoke -demo
+          docker run -d --name cinevote-smoke -p 8080:8080 cinevote:smoke -demo
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:8080/healthz | grep -q ok; then
               echo "healthy after ${i}s"

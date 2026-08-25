@@ -1,0 +1,95 @@
+{{define "content"}}
+{{$root := .}}
+
+<section class="similar-head">
+  <div class="similar-art">{{template "poster" .Movie}}</div>
+  <div>
+    <p class="eyebrow">Liknande filmer</p>
+    <h1 class="hero-title">{{.Movie.Title}}{{with .Movie.Year}} <span class="year">{{.}}</span>{{end}}</h1>
+    <div class="meta">
+      {{with .Movie.Rating}}<span class="chip chip-rating">★ {{.}}</span>{{end}}
+      {{with .Movie.Runtime}}<span class="chip">{{.}}</span>{{end}}
+      {{with .Movie.Genres}}<span class="chip chip-muted">{{.}}</span>{{end}}
+    </div>
+    {{with .Movie.Director}}<p class="credits">Regi: <a href="/?director={{. | urlquery}}">{{.}}</a></p>{{end}}
+    {{with .Movie.Actors}}<p class="credits">Med: {{.}}</p>{{end}}
+    <p class="auth-alt"><a href="/#film-{{.Movie.ID}}">← Tillbaka till röstningen</a></p>
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="section-title">
+    Redan i listan
+    <span class="section-note">rangordnade efter hur mycket de har gemensamt</span>
+  </h2>
+  {{if .Matches}}
+  <div class="grid">
+    {{range .Matches}}
+    <div class="matchwrap">
+      {{template "card" (dict "M" .Movie "Variant" "grid" "Root" $root)}}
+      <ul class="reasons">
+        {{range .Reasons}}<li>{{.}}</li>{{end}}
+      </ul>
+    </div>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty">Inget annat förslag liknar den här ännu — genre, regissör och skådespelare skiljer sig från allt annat i listan.</p>
+  {{end}}
+</section>
+
+<section class="section">
+  <h2 class="section-title">
+    Filmtips utifrån
+    <span class="section-note">{{if .Recommendations}}inte i listan än{{else}}förslag från TMDB{{end}}</span>
+  </h2>
+
+  {{if .Recommendations}}
+  <div class="grid grid-tips">
+    {{range .Recommendations}}
+    <article class="card card-tip">
+      <div class="card-art">
+        {{if .PosterURL}}
+          <img class="poster" src="{{.PosterURL}}" alt="Filmposter för {{.Title}}" loading="lazy" referrerpolicy="no-referrer">
+        {{else}}
+          <div class="poster poster-empty ph-3" aria-hidden="true"><span>{{initials .Title}}</span></div>
+        {{end}}
+      </div>
+      <div class="card-body">
+        <h3 class="card-title">{{.Title}}{{with .Year}} <span class="year">{{.}}</span>{{end}}</h3>
+        <div class="meta">
+          {{with .Rating}}<span class="chip chip-rating">★ {{.}}</span>{{end}}
+          {{with .Genres}}<span class="chip chip-muted">{{.}}</span>{{end}}
+        </div>
+        {{with .Overview}}<p class="overview">{{.}}</p>{{end}}
+        <div class="actions">
+          <form method="post" action="/movies">
+            <input type="hidden" name="csrf" value="{{$root.CSRF}}">
+            <input type="hidden" name="title" value="{{.Title}}">
+            <input type="hidden" name="year" value="{{.Year}}">
+            <button class="btn btn-primary" type="submit">Föreslå den här</button>
+          </form>
+          {{with .IMDbURL}}<a class="btn btn-ghost" href="{{.}}" target="_blank" rel="noopener noreferrer">IMDb ↗</a>{{end}}
+        </div>
+      </div>
+    </article>
+    {{end}}
+  </div>
+
+  {{else if .RecommendError}}
+  <p class="empty">Kunde inte nå TMDB just nu. Prova igen om en stund.</p>
+
+  {{else if .TMDBEnabled}}
+  <p class="empty">TMDB hade inga tips för den här filmen.</p>
+
+  {{else}}
+  <p class="empty">
+    Tips på filmer som <em>inte</em> finns i listan kräver en nyckel till TMDB — OMDb har inget
+    sådant API. Skaffa en gratis på
+    <a href="{{.TMDBKeyURL}}" target="_blank" rel="noopener noreferrer">themoviedb.org/settings/api</a>
+    och starta om med <code>TMDB_API_KEY=din-nyckel</code>. Metadata och posters fortsätter komma från
+    {{if .LookupSource}}{{.LookupSource}}{{else}}OMDb{{end}}.
+  </p>
+  {{end}}
+</section>
+{{end}}

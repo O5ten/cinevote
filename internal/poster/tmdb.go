@@ -39,10 +39,20 @@ type tmdbMovie struct {
 	PosterPath  string  `json:"poster_path"`
 	Overview    string  `json:"overview"`
 	VoteAverage float64 `json:"vote_average"`
+	VoteCount   int64   `json:"vote_count"`
 	Runtime     int     `json:"runtime"`
 	Genres      []struct {
 		Name string `json:"name"`
 	} `json:"genres"`
+	Credits struct {
+		Cast []struct {
+			Name string `json:"name"`
+		} `json:"cast"`
+		Crew []struct {
+			Name string `json:"name"`
+			Job  string `json:"job"`
+		} `json:"crew"`
+	} `json:"credits"`
 }
 
 func (t *TMDB) Search(ctx context.Context, query string, limit int) ([]Result, error) {
@@ -74,7 +84,9 @@ func (t *TMDB) Detail(ctx context.Context, id string) (*Result, error) {
 		return nil, nil // not a TMDB id; nothing to look up
 	}
 	var m tmdbMovie
-	if err := t.get(ctx, "/movie/"+id, nil, &m); err != nil {
+	// One request for the film and its credits, so we get a director and a few
+	// names without a second round trip.
+	if err := t.get(ctx, "/movie/"+id, url.Values{"append_to_response": {"credits"}}, &m); err != nil {
 		return nil, err
 	}
 	if m.ID == 0 {
@@ -86,12 +98,13 @@ func (t *TMDB) Detail(ctx context.Context, id string) (*Result, error) {
 
 func (t *TMDB) result(m tmdbMovie) Result {
 	res := Result{
-		Source:   SourceTMDB,
-		TMDBID:   m.ID,
-		IMDbID:   strings.TrimSpace(m.IMDbID),
-		Title:    strings.TrimSpace(m.Title),
-		Year:     firstYear(m.ReleaseDate),
-		Overview: strings.TrimSpace(m.Overview),
+		Source:      SourceTMDB,
+		TMDBID:      m.ID,
+		IMDbID:      strings.TrimSpace(m.IMDbID),
+		Title:       strings.TrimSpace(m.Title),
+		Year:        firstYear(m.ReleaseDate),
+		Overview:    strings.TrimSpace(m.Overview),
+		RatingVotes: m.VoteCount,
 	}
 	if m.PosterPath != "" {
 		res.PosterURL = TMDBImageBase + m.PosterPath
@@ -107,7 +120,75 @@ func (t *TMDB) result(m tmdbMovie) Result {
 		names = append(names, g.Name)
 	}
 	res.Genres = strings.Join(names, ", ")
+
+	for _, member := range m.Credits.Crew {
+		if member.Job == "Director" {
+			res.Director = member.Name
+			break
+		}
+	}
+	cast := make([]string, 0, 3)
+	for _, actor := range m.Credits.Cast {
+		if len(cast) == 3 {
+			break
+		}
+		cast = append(cast, actor.Name)
+	}
+	res.Actors = strings.Join(cast, ", ")
 	return res
+}
+
+// Recommendations returns films TMDB considers similar to the given one. A
+// TMDB id is used directly; with only an IMDb id we resolve it first.
+func (t *TMDB) Recommendations(ctx context.Context, imdbID string, tmdbID int64, limit int) ([]Result, error) {
+	if tmdbID <= 0 {
+		resolved, err := t.byIMDbID(ctx, imdbID)
+		if err != nil || resolved == 0 {
+			return nil, err
+		}
+		tmdbID = resolved
+	}
+
+	var body struct {
+		Results []tmdbMovie `json:"results"`
+	}
+	path := "/movie/" + strconv.FormatInt(tmdbID, 10) + "/recommendations"
+	if err := t.get(ctx, path, nil, &body); err != nil {
+		return nil, err
+	}
+
+	out := make([]Result, 0, limit)
+	for _, m := range body.Results {
+		if len(out) == limit {
+			break
+		}
+		if strings.TrimSpace(m.Title) == "" {
+			continue
+		}
+		out = append(out, t.result(m))
+	}
+	return out, nil
+}
+
+// byIMDbID maps an IMDb id to TMDB's own id, which the recommendation endpoint
+// requires. Returns 0 when TMDB does not know the film.
+func (t *TMDB) byIMDbID(ctx context.Context, imdbID string) (int64, error) {
+	imdbID = strings.TrimSpace(imdbID)
+	if !strings.HasPrefix(imdbID, "tt") {
+		return 0, nil
+	}
+	var body struct {
+		MovieResults []struct {
+			ID int64 `json:"id"`
+		} `json:"movie_results"`
+	}
+	if err := t.get(ctx, "/find/"+imdbID, url.Values{"external_source": {"imdb_id"}}, &body); err != nil {
+		return 0, err
+	}
+	if len(body.MovieResults) == 0 {
+		return 0, nil
+	}
+	return body.MovieResults[0].ID, nil
 }
 
 func (t *TMDB) get(ctx context.Context, path string, params url.Values, out any) error {

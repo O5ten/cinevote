@@ -49,7 +49,10 @@ func run(log *slog.Logger, demoFlag bool) error {
 		return err
 	}
 	if demoFlag || cfg.Demo {
-		cfg.ApplyDemoDefaults(demo.Password)
+		if replaced := cfg.ApplyDemoDefaults(demo.Password); replaced != "" {
+			log.Info("demo mode uses a throwaway database, ignoring the configured one",
+				"ignored", replaced, "using", cfg.DBPath)
+		}
 	}
 
 	if dir := filepath.Dir(cfg.DBPath); dir != "." && dir != "" {

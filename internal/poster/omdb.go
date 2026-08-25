@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -46,9 +47,12 @@ type omdbDetail struct {
 	Year       string `json:"Year"`
 	Runtime    string `json:"Runtime"`
 	Genre      string `json:"Genre"`
+	Director   string `json:"Director"`
+	Actors     string `json:"Actors"`
 	Plot       string `json:"Plot"`
 	Poster     string `json:"Poster"`
 	IMDbRating string `json:"imdbRating"`
+	IMDbVotes  string `json:"imdbVotes"`
 	IMDbID     string `json:"imdbID"`
 	Type       string `json:"Type"`
 	Response   string `json:"Response"`
@@ -115,15 +119,18 @@ func (o *OMDb) Detail(ctx context.Context, id string) (*Result, error) {
 	}
 
 	return &Result{
-		Source:    SourceIMDb,
-		IMDbID:    strings.TrimSpace(body.IMDbID),
-		Title:     strings.TrimSpace(body.Title),
-		Year:      firstYear(body.Year),
-		PosterURL: naOr(body.Poster),
-		Overview:  naOr(body.Plot),
-		Rating:    naOr(body.IMDbRating),
-		Runtime:   naOr(body.Runtime),
-		Genres:    naOr(body.Genre),
+		Source:      SourceIMDb,
+		IMDbID:      strings.TrimSpace(body.IMDbID),
+		Title:       strings.TrimSpace(body.Title),
+		Year:        firstYear(body.Year),
+		PosterURL:   naOr(body.Poster),
+		Overview:    naOr(body.Plot),
+		Rating:      naOr(body.IMDbRating),
+		Runtime:     naOr(body.Runtime),
+		Genres:      naOr(body.Genre),
+		Director:    naOr(body.Director),
+		Actors:      naOr(body.Actors),
+		RatingVotes: parseVoteCount(body.IMDbVotes),
 	}, nil
 }
 
@@ -149,6 +156,16 @@ func (o *OMDb) get(ctx context.Context, params url.Values, out any) error {
 		return fmt.Errorf("omdb decode: %w", err)
 	}
 	return nil
+}
+
+// parseVoteCount reads OMDb's thousands-separated vote count ("2,600,123").
+func parseVoteCount(raw string) int64 {
+	raw = strings.ReplaceAll(naOr(raw), ",", "")
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // firstYear trims OMDb's range notation ("1999-2004", "2010–") to a single year.

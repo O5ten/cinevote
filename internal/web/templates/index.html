@@ -45,16 +45,20 @@
 
     <div class="field field-wide">
       <label for="title">Titel</label>
-      <div class="searchrow">
-        <input type="text" id="title" name="title" maxlength="200" required autocomplete="off"
-               placeholder="t.ex. Blade Runner">
-        {{if .LookupEnabled}}
-        <button class="btn btn-search" type="button" id="search-btn"
-                data-label="{{.LookupSource}}">Sök på {{.LookupSource}}</button>
-        {{end}}
+      <div class="searchfield">
+        <div class="searchrow">
+          <input type="text" id="title" name="title" maxlength="200" required autocomplete="off"
+                 placeholder="t.ex. Blade Runner" role="combobox" aria-expanded="false"
+                 aria-controls="search-results" aria-autocomplete="list">
+          {{if .LookupEnabled}}
+          <button class="btn btn-search" type="button" id="search-btn"
+                  data-label="{{.LookupSource}}">Sök på {{.LookupSource}}</button>
+          {{end}}
+        </div>
+        <div id="search-results" class="results" role="listbox" hidden></div>
       </div>
       {{if .LookupEnabled}}
-      <p class="hint">Sök för att hämta poster, betyg och speltid från {{.LookupSource}} — eller fyll i själv.</p>
+      <p class="hint">Pausa en halv sekund och vi söker på {{.LookupSource}} automatiskt — välj en träff i listan för att hämta poster, betyg och speltid. Du kan också fylla i allt själv.</p>
       {{else}}
       <p class="hint">Ingen filmdatabas är konfigurerad, så klistra in en posterlänk själv.
         Vill du få poster, betyg och speltid automatiskt? Skaffa en gratisnyckel på
@@ -62,8 +66,6 @@
         och sätt <code>OMDB_API_KEY</code>.</p>
       {{end}}
     </div>
-
-    <div id="search-results" class="results" hidden></div>
 
     <div class="field">
       <label for="year">Årtal <span class="opt">frivilligt</span></label>
@@ -87,6 +89,83 @@
     </div>
   </form>
 </details>
+
+
+<form class="filters" method="get" action="/" role="search">
+  <div class="field field-grow">
+    <label for="filter-q">Sök i listan</label>
+    <input type="search" id="filter-q" name="q" value="{{.Query.Text}}"
+           placeholder="titel, regissör, skådespelare, genre…" autocomplete="off">
+  </div>
+
+  <div class="field">
+    <label for="filter-genre">Genre</label>
+    <select id="filter-genre" name="genre">
+      <option value="">Alla</option>
+      {{range .AllGenres}}<option value="{{.}}"{{if eq . $.Query.Genre}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="filter-director">Regissör</label>
+    <select id="filter-director" name="director">
+      <option value="">Alla</option>
+      {{range .AllDirectors}}<option value="{{.}}"{{if eq . $.Query.Director}} selected{{end}}>{{.}}</option>{{end}}
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="filter-rating">Betyg</label>
+    <select id="filter-rating" name="min_rating">
+      <option value="">Alla</option>
+      <option value="6"{{if eq .Query.MinRatingLabel "6"}} selected{{end}}>6+</option>
+      <option value="7"{{if eq .Query.MinRatingLabel "7"}} selected{{end}}>7+</option>
+      <option value="8"{{if eq .Query.MinRatingLabel "8"}} selected{{end}}>8+</option>
+      <option value="8.5"{{if eq .Query.MinRatingLabel "8.5"}} selected{{end}}>8,5+</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="filter-sort">Sortera</label>
+    <select id="filter-sort" name="sort">
+      <option value="votes"{{if eq .Query.Sort "votes"}} selected{{end}}>Flest röster</option>
+      <option value="rating"{{if eq .Query.Sort "rating"}} selected{{end}}>Högst betyg</option>
+      <option value="year"{{if eq .Query.Sort "year"}} selected{{end}}>Nyast film</option>
+      <option value="new"{{if eq .Query.Sort "new"}} selected{{end}}>Senast tillagd</option>
+      <option value="title"{{if eq .Query.Sort "title"}} selected{{end}}>Titel A–Ö</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="filter-show">Visa</label>
+    <select id="filter-show" name="show">
+      <option value="open"{{if eq .Query.Show "open"}} selected{{end}}>Ej sedda</option>
+      <option value="all"{{if eq .Query.Show "all"}} selected{{end}}>Alla</option>
+      <option value="seen"{{if eq .Query.Show "seen"}} selected{{end}}>Bara sedda</option>
+    </select>
+  </div>
+
+  <div class="field field-actions filter-buttons">
+    <button class="btn btn-primary" type="submit">Filtrera</button>
+    {{if .Filtering}}<a class="btn btn-ghost" href="/">Rensa</a>{{end}}
+  </div>
+</form>
+
+{{if .Filtering}}
+<section class="section">
+  <h2 class="section-title">
+    Träffar
+    <span class="section-note">{{len .Results}} av {{.TotalMovies}} {{plural .TotalMovies "film" "filmer"}}</span>
+  </h2>
+  {{if .Results}}
+  <div class="grid">
+    {{range .Results}}{{template "card" (dict "M" . "Variant" "grid" "Root" $)}}{{end}}
+  </div>
+  {{else}}
+  <p class="empty">Inga filmer matchar filtret. <a href="/">Visa alla</a>.</p>
+  {{end}}
+</section>
+{{else}}
 
 {{if .Top}}
 <section class="section">
@@ -119,5 +198,7 @@
   </div>
 </section>
 {{end}}
+
+{{end}}{{/* end of the filtered/unfiltered split */}}
 
 {{end}}

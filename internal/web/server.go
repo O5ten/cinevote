@@ -4,9 +4,11 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"html/template"
@@ -38,6 +40,10 @@ const (
 	// OMDbKeyURL is where a free API key comes from. Shown in the UI whenever
 	// poster lookups are switched off, so nobody has to go hunting for it.
 	OMDbKeyURL = "https://www.omdbapi.com/apikey.aspx"
+
+	// TMDBKeyURL is where the key for "films like this one" comes from. OMDb
+	// has no recommendation endpoint, so that half needs TMDB.
+	TMDBKeyURL = "https://www.themoviedb.org/settings/api"
 )
 
 type Server struct {
@@ -48,6 +54,9 @@ type Server struct {
 	tmpl    map[string]*template.Template
 	mux     *http.ServeMux
 	logins  *throttle
+	// assetVersion busts the browser cache when the CSS or JS changes. Without
+	// it, a deploy leaves everyone on the old assets until max-age expires.
+	assetVersion string
 }
 
 func New(cfg config.Config, st *store.Store, pc *poster.Service, log *slog.Logger) (*Server, error) {
@@ -55,13 +64,18 @@ func New(cfg config.Config, st *store.Store, pc *poster.Service, log *slog.Logge
 	if err != nil {
 		return nil, err
 	}
+	version, err := hashAssets()
+	if err != nil {
+		return nil, err
+	}
 	s := &Server{
-		cfg:     cfg,
-		store:   st,
-		posters: pc,
-		log:     log,
-		tmpl:    tmpl,
-		logins:  newThrottle(10, 15*time.Minute),
+		cfg:          cfg,
+		store:        st,
+		posters:      pc,
+		log:          log,
+		tmpl:         tmpl,
+		logins:       newThrottle(10, 15*time.Minute),
+		assetVersion: version,
 	}
 	s.routes()
 	return s, nil
@@ -94,6 +108,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /movies/{id}/unvote", s.requireUser(s.handleUnvote))
 	mux.HandleFunc("POST /movies/{id}/seen", s.requireAdmin(s.handleSetSeen))
 	mux.HandleFunc("POST /movies/{id}/delete", s.requireUser(s.handleDeleteMovie))
+	mux.HandleFunc("GET /movies/{id}/similar", s.requireUser(s.handleSimilar))
 
 	mux.HandleFunc("GET /admin", s.requireAdmin(s.handleAdmin))
 	mux.HandleFunc("POST /admin/users/{id}/delete", s.requireAdmin(s.handleDeleteUser))
@@ -231,11 +246,41 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
+// cacheControl lets browsers keep assets for a long time. That is only safe
+// because every asset URL carries a content hash (see hashAssets), so changed
+// files are requested under a new URL.
 func cacheControl(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "public, max-age=3600")
+		if r.URL.Query().Get("v") != "" {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			// Unversioned request: allow caching, but make it revalidate.
+			w.Header().Set("Cache-Control", "public, max-age=0, must-revalidate")
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hashAssets fingerprints the embedded static files. The result goes on every
+// asset URL as ?v=..., which is what makes a long cache lifetime safe.
+func hashAssets() (string, error) {
+	sum := sha256.New()
+	err := fs.WalkDir(staticFS, "static", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		body, err := staticFS.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		sum.Write([]byte(path))
+		sum.Write(body)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("hash static assets: %w", err)
+	}
+	return hex.EncodeToString(sum.Sum(nil))[:12], nil
 }
 
 type statusRecorder struct {
@@ -401,15 +446,14 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page
 	data["MaxVotes"] = s.cfg.MaxVotes
 	data["LookupEnabled"] = s.posters.Enabled()
 	data["LookupSource"] = s.posters.SourceLabel()
+	data["AssetVersion"] = s.assetVersion
 	data["OMDbKeyURL"] = OMDbKeyURL
+	data["TMDBKeyURL"] = TMDBKeyURL
+	data["TMDBEnabled"] = s.posters.RecommendationsEnabled()
 	data["Demo"] = s.cfg.Demo
 	if s.cfg.Demo {
 		data["DemoPassword"] = demo.Password
 		data["DemoAccounts"] = demo.Accounts(s.cfg.AdminUsername)
-		// Only a demo that picked its own throwaway database resets itself; if
-		// someone pointed CINEVOTE_DB somewhere, changes stick and the banner
-		// must not promise otherwise.
-		data["DemoEphemeral"] = s.cfg.FreshDB
 	}
 	data["Flash"] = s.takeFlash(w, r)
 

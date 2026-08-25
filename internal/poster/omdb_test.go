@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -23,6 +24,34 @@ func omdbServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch {
+		case strings.Contains(search, "dune"):
+			// Deliberately returns the weakest film first, so a rating-ranked
+			// result set has to reorder it.
+			w.Write([]byte(`{"Search":[
+			  {"Title":"Dune","Year":"1984","imdbID":"tt0087182","Type":"movie","Poster":"https://example.test/d84.jpg"},
+			  {"Title":"Dune: Part Two","Year":"2024","imdbID":"tt15239678","Type":"movie","Poster":"https://example.test/d2.jpg"},
+			  {"Title":"Dune: Part One","Year":"2021","imdbID":"tt1160419","Type":"movie","Poster":"https://example.test/d1.jpg"},
+			  {"Title":"Dune Drifter","Year":"2020","imdbID":"tt9999999","Type":"movie","Poster":"N/A"}],"Response":"True"}`))
+		case q.Get("i") == "tt0087182":
+			w.Write([]byte(`{"Title":"Dune","Year":"1984","Runtime":"137 min","Genre":"Adventure, Drama, Sci-Fi",
+			  "Director":"David Lynch","Actors":"Kyle MacLachlan, Virginia Madsen, Francesca Annis",
+			  "Plot":"A Duke's son leads desert warriors.","Poster":"https://example.test/d84.jpg",
+			  "imdbRating":"6.3","imdbID":"tt0087182","Type":"movie","Response":"True"}`))
+		case q.Get("i") == "tt15239678":
+			w.Write([]byte(`{"Title":"Dune: Part Two","Year":"2024","Runtime":"166 min","Genre":"Action, Adventure, Drama",
+			  "Director":"Denis Villeneuve","Actors":"Timothée Chalamet, Zendaya, Rebecca Ferguson",
+			  "Plot":"Paul unites with the Fremen.","Poster":"https://example.test/d2.jpg",
+			  "imdbRating":"8.5","imdbID":"tt15239678","Type":"movie","Response":"True"}`))
+		case q.Get("i") == "tt1160419":
+			w.Write([]byte(`{"Title":"Dune: Part One","Year":"2021","Runtime":"155 min","Genre":"Action, Adventure, Drama",
+			  "Director":"Denis Villeneuve","Actors":"Timothée Chalamet, Rebecca Ferguson, Zendaya",
+			  "Plot":"Paul Atreides arrives on Arrakis.","Poster":"https://example.test/d1.jpg",
+			  "imdbRating":"8.0","imdbID":"tt1160419","Type":"movie","Response":"True"}`))
+		case q.Get("i") == "tt9999999":
+			// No rating at all, the way OMDb answers for obscure films.
+			w.Write([]byte(`{"Title":"Dune Drifter","Year":"2020","Runtime":"N/A","Genre":"Sci-Fi",
+			  "Director":"Marc Price","Actors":"Phoebe Sparrow","Plot":"N/A","Poster":"N/A",
+			  "imdbRating":"N/A","imdbID":"tt9999999","Type":"movie","Response":"True"}`))
 		case search == "blade runner":
 			w.Write([]byte(`{"Search":[
 			  {"Title":"Blade Runner","Year":"1982","imdbID":"tt0083658","Type":"movie",
@@ -189,5 +218,93 @@ func TestFirstYear(t *testing.T) {
 		if got := firstYear(in); got != want {
 			t.Errorf("firstYear(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// A search result set should lead with the best-reviewed film, and the thin
+// search response has to be filled in for that to be possible at all.
+func TestSearchPrefersHigherRatedFilms(t *testing.T) {
+	svc := testService(t)
+	// A query that is not any film's exact title, so ranking is purely by rating.
+	results, err := svc.Search(context.Background(), "dune saga", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 4 {
+		t.Fatalf("got %d results, want 4", len(results))
+	}
+
+	if results[0].Title != "Dune: Part Two" {
+		t.Errorf("first result is %q, want the 8.5-rated Dune: Part Two", results[0].Title)
+	}
+	if results[len(results)-1].Title != "Dune Drifter" {
+		t.Errorf("last result is %q, want the unrated Dune Drifter", results[len(results)-1].Title)
+	}
+
+	var ratings []float64
+	for _, r := range results {
+		if v, ok := r.rating(); ok {
+			ratings = append(ratings, v)
+		}
+	}
+	for i := 1; i < len(ratings); i++ {
+		if ratings[i-1] < ratings[i] {
+			t.Errorf("ratings are not descending: %v", ratings)
+			break
+		}
+	}
+
+	// Enrichment must also fill the fields the search response omits, which is
+	// what the suggestion list displays.
+	for _, r := range results[:3] {
+		if r.Rating == "" || r.Genres == "" || r.Director == "" {
+			t.Errorf("%s was not enriched: %+v", r.Title, r)
+		}
+	}
+	// ...without losing what the search hit already had.
+	if results[0].PosterURL == "" {
+		t.Error("poster from the search hit was lost during enrichment")
+	}
+}
+
+// An exact title match outranks a better-reviewed sequel: someone searching
+// "Dune" means Dune.
+func TestExactTitleMatchWinsOverRating(t *testing.T) {
+	svc := testService(t)
+	results, err := svc.Search(context.Background(), "Dune", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if results[0].Title != "Dune" {
+		t.Errorf("first result is %q, want the exact match Dune", results[0].Title)
+	}
+	if results[1].Title != "Dune: Part Two" {
+		t.Errorf("second result is %q, want the highest rated of the rest", results[1].Title)
+	}
+}
+
+// Detail lookups are cached, so typing in the search box does not burn through
+// a free API quota.
+func TestDetailLookupsAreCached(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"Title":"Dune: Part One","Year":"2021","imdbRating":"8.0","Genre":"Action",
+		  "Director":"Denis Villeneuve","imdbID":"tt1160419","Type":"movie","Response":"True"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOMDb("test-key", nil)
+	client.base = srv.URL + "/"
+	svc := &Service{provider: client}
+
+	for i := 0; i < 3; i++ {
+		if _, err := svc.Detail(context.Background(), "tt1160419"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("made %d API calls for the same film, want 1", got)
 	}
 }

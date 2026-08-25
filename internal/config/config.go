@@ -30,9 +30,6 @@ type Config struct {
 	// never be reachable by accident — only an explicit -demo flag or
 	// CINEVOTE_DEMO=true turns it on.
 	Demo bool
-	// DBPathExplicit records whether CINEVOTE_DB was set, so demo mode knows
-	// it may pick a throwaway location instead.
-	DBPathExplicit bool
 	// FreshDB asks the caller to delete the database before opening it, so a
 	// demo always starts from the same state.
 	FreshDB bool
@@ -41,8 +38,7 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		Addr:             env("CINEVOTE_ADDR", ":8080"),
-		DBPathExplicit:   strings.TrimSpace(os.Getenv("CINEVOTE_DB")) != "",
-		DBPath:           env("CINEVOTE_DB", "data/cinevote.db"),
+		DBPath:           env("CINEVOTE_DB", DefaultDBPath),
 		SiteName:         env("CINEVOTE_SITE_NAME", "CineVote"),
 		AdminUsername:    env("CINEVOTE_ADMIN_USERNAME", "admin"),
 		AdminPassword:    os.Getenv("CINEVOTE_ADMIN_PASSWORD"),
@@ -75,25 +71,36 @@ func Load() (Config, error) {
 	return c, nil
 }
 
-// DemoDBPath is where a demo without CINEVOTE_DB keeps its throwaway database.
+// DefaultDBPath is where the database lives when CINEVOTE_DB says nothing.
+const DefaultDBPath = "data/cinevote.db"
+
+// DemoDBPath is the throwaway database demo mode always uses.
 func DemoDBPath() string {
 	return filepath.Join(os.TempDir(), "cinevote-demo.db")
 }
 
-// ApplyDemoDefaults relaxes everything a demo should not have to configure:
-// a throwaway database that is recreated on every start, and a known admin
-// password. Explicit settings always win.
-func (c *Config) ApplyDemoDefaults(adminPassword string) {
+// ApplyDemoDefaults relaxes everything a demo should not have to configure.
+//
+// The database is always the throwaway one, whatever CINEVOTE_DB says: a demo
+// that reseeds on every start is the whole point, and it also means the demo
+// can never touch a real database by accident. Returns the path it replaced, if
+// any, so the caller can say so out loud.
+func (c *Config) ApplyDemoDefaults(adminPassword string) (replacedDB string) {
 	c.Demo = true
-	if !c.DBPathExplicit {
-		c.DBPath = DemoDBPath()
-		c.FreshDB = true
+	// Only worth mentioning if someone actually chose a path; the default is
+	// not something they asked for.
+	if c.DBPath != DemoDBPath() && c.DBPath != DefaultDBPath {
+		replacedDB = c.DBPath
 	}
+	c.DBPath = DemoDBPath()
+	c.FreshDB = true
+
 	if c.AdminPassword == "" {
 		c.AdminPassword = adminPassword
 	}
 	// An invite code would defeat the purpose of a click-and-try demo.
 	c.RegistrationCode = ""
+	return replacedDB
 }
 
 func env(key, def string) string {

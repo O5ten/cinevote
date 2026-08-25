@@ -10,10 +10,10 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load with an empty environment: %v", err)
 	}
-	if cfg.Addr != ":8080" || cfg.DBPath != "data/cinevote.db" || cfg.MaxVotes != 5 {
+	if cfg.Addr != ":8080" || cfg.DBPath != DefaultDBPath || cfg.MaxVotes != 5 {
 		t.Errorf("unexpected defaults: %+v", cfg)
 	}
-	if cfg.Demo || cfg.FreshDB || cfg.DBPathExplicit {
+	if cfg.Demo || cfg.FreshDB {
 		t.Error("demo mode must never be on by default")
 	}
 }
@@ -48,7 +48,9 @@ func TestApplyDemoDefaultsNeedsNoConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.ApplyDemoDefaults("demo-password")
+	if replaced := cfg.ApplyDemoDefaults("demo-password"); replaced != "" {
+		t.Errorf("nothing was configured, so nothing should be reported as replaced, got %q", replaced)
+	}
 
 	if !cfg.Demo {
 		t.Error("demo flag not set")
@@ -67,22 +69,27 @@ func TestApplyDemoDefaultsNeedsNoConfiguration(t *testing.T) {
 	}
 }
 
-// An explicitly configured database is never wiped, not even in demo mode.
-func TestApplyDemoDefaultsKeepsExplicitSettings(t *testing.T) {
+// Demo mode always uses its own throwaway database, so it can reseed freely and
+// can never delete or seed into a real one.
+func TestApplyDemoDefaultsAlwaysUsesTheThrowawayDatabase(t *testing.T) {
 	t.Setenv("CINEVOTE_DB", "/srv/cinevote/real.db")
 	t.Setenv("CINEVOTE_ADMIN_PASSWORD", "chosen-by-a-human")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.ApplyDemoDefaults("demo-password")
+	replaced := cfg.ApplyDemoDefaults("demo-password")
 
-	if cfg.DBPath != "/srv/cinevote/real.db" {
-		t.Errorf("db path = %q, want the configured one", cfg.DBPath)
+	if cfg.DBPath != DemoDBPath() {
+		t.Errorf("db path = %q, want the throwaway path %q", cfg.DBPath, DemoDBPath())
 	}
-	if cfg.FreshDB {
-		t.Error("a database someone configured must never be deleted on start")
+	if !cfg.FreshDB {
+		t.Error("the throwaway database should be recreated on start")
 	}
+	if replaced != "/srv/cinevote/real.db" {
+		t.Errorf("replaced = %q, want the configured path so it can be logged", replaced)
+	}
+	// A password someone chose is still theirs.
 	if cfg.AdminPassword != "chosen-by-a-human" {
 		t.Errorf("admin password = %q, want the configured one", cfg.AdminPassword)
 	}

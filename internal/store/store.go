@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS movies (
 	rating       TEXT    NOT NULL DEFAULT '',
 	runtime      TEXT    NOT NULL DEFAULT '',
 	genres       TEXT    NOT NULL DEFAULT '',
+	director     TEXT    NOT NULL DEFAULT '',
+	actors       TEXT    NOT NULL DEFAULT '',
 	suggested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
 	seen         INTEGER NOT NULL DEFAULT 0,
 	seen_at      INTEGER,
@@ -111,6 +113,53 @@ CREATE INDEX IF NOT EXISTS idx_votes_movie ON votes(movie_id);
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
+	}
+	// CREATE TABLE IF NOT EXISTS leaves an older table alone, so columns added
+	// in later versions have to be filled in separately.
+	return s.ensureColumns("movies", []column{
+		{"imdb_id", "TEXT NOT NULL DEFAULT ''"},
+		{"rating", "TEXT NOT NULL DEFAULT ''"},
+		{"runtime", "TEXT NOT NULL DEFAULT ''"},
+		{"genres", "TEXT NOT NULL DEFAULT ''"},
+		{"director", "TEXT NOT NULL DEFAULT ''"},
+		{"actors", "TEXT NOT NULL DEFAULT ''"},
+	})
+}
+
+type column struct {
+	name string
+	decl string
+}
+
+// ensureColumns adds any of the given columns that the table is missing. SQLite
+// has no "ADD COLUMN IF NOT EXISTS", so we ask what is there first.
+func (s *Store) ensureColumns(table string, want []column) error {
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("scan column of %s: %w", table, err)
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, col := range want {
+		if have[col.name] {
+			continue
+		}
+		// Identifiers come from the constant list above, never from input.
+		if _, err := s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + col.name + " " + col.decl); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", table, col.name, err)
+		}
 	}
 	return nil
 }
@@ -306,6 +355,8 @@ type Movie struct {
 	Rating      string // IMDb rating as text, e.g. "8.1"
 	Runtime     string // e.g. "117 min"
 	Genres      string // comma separated
+	Director    string
+	Actors      string // comma separated, a few headline names
 	SuggestedBy string // username, empty if the account is gone
 	Seen        bool
 	SeenAt      time.Time
@@ -335,6 +386,8 @@ type NewMovie struct {
 	Rating      string
 	Runtime     string
 	Genres      string
+	Director    string
+	Actors      string
 	SuggestedBy int64
 }
 
@@ -345,10 +398,10 @@ func (s *Store) AddMovie(ctx context.Context, m NewMovie) (int64, error) {
 	}
 	res, err := s.db.ExecContext(ctx, `
 INSERT INTO movies (title, title_ci, year, poster_url, overview, imdb_id, tmdb_id,
-                    rating, runtime, genres, suggested_by, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    rating, runtime, genres, director, actors, suggested_by, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.Title, ci(m.Title), m.Year, m.PosterURL, m.Overview, m.IMDbID, tmdb,
-		m.Rating, m.Runtime, m.Genres, m.SuggestedBy, time.Now().Unix())
+		m.Rating, m.Runtime, m.Genres, m.Director, m.Actors, m.SuggestedBy, time.Now().Unix())
 	if err != nil {
 		if isUniqueViolation(err) {
 			return 0, ErrDuplicateFilm
@@ -365,7 +418,7 @@ func (s *Store) Movies(ctx context.Context, viewerID int64) ([]Movie, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT m.id, m.title, m.year, m.poster_url, m.overview,
        m.imdb_id, COALESCE(m.tmdb_id, 0), m.rating, m.runtime, m.genres,
-       COALESCE(u.username, ''),
+       m.director, m.actors, COALESCE(u.username, ''),
        m.seen, COALESCE(m.seen_at, 0), m.created_at,
        (SELECT COUNT(*) FROM votes v WHERE v.movie_id = m.id) AS votes,
        EXISTS(SELECT 1 FROM votes v2 WHERE v2.movie_id = m.id AND v2.user_id = ?) AS voted_by_me,
@@ -389,6 +442,7 @@ SELECT m.id, m.title, m.year, m.poster_url, m.overview,
 		var voters string
 		if err := rows.Scan(&m.ID, &m.Title, &m.Year, &m.PosterURL, &m.Overview,
 			&m.IMDbID, &m.TMDBID, &m.Rating, &m.Runtime, &m.Genres,
+			&m.Director, &m.Actors,
 			&m.SuggestedBy, &seen, &seenAt, &created, &m.Votes, &voted, &voters); err != nil {
 			return nil, fmt.Errorf("scan movie: %w", err)
 		}
@@ -417,12 +471,14 @@ func (s *Store) MovieByID(ctx context.Context, id int64) (*Movie, error) {
 	err := s.db.QueryRowContext(ctx, `
 SELECT m.id, m.title, m.year, m.poster_url, m.overview,
        m.imdb_id, COALESCE(m.tmdb_id, 0), m.rating, m.runtime, m.genres,
+       m.director, m.actors,
        COALESCE(u.username, ''), m.seen, COALESCE(m.seen_at, 0), m.created_at,
        (SELECT COUNT(*) FROM votes v WHERE v.movie_id = m.id)
   FROM movies m LEFT JOIN users u ON u.id = m.suggested_by
  WHERE m.id = ?`, id).
 		Scan(&m.ID, &m.Title, &m.Year, &m.PosterURL, &m.Overview,
 			&m.IMDbID, &m.TMDBID, &m.Rating, &m.Runtime, &m.Genres,
+			&m.Director, &m.Actors,
 			&m.SuggestedBy, &seen, &seenAt, &created, &m.Votes)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

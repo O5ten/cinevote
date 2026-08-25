@@ -56,6 +56,8 @@ type seedMovie struct {
 	Rating   string
 	Runtime  string
 	Genres   string
+	Director string
+	Actors   string
 	Overview string
 	Poster   string
 
@@ -132,6 +134,8 @@ func seedMovieRow(ctx context.Context, st *store.Store, ids map[string]int64, m 
 		Rating:      m.Rating,
 		Runtime:     m.Runtime,
 		Genres:      m.Genres,
+		Director:    m.Director,
+		Actors:      m.Actors,
 		SuggestedBy: ids[m.SuggestedBy],
 	})
 	if err != nil {

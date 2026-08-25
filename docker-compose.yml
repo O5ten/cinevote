@@ -43,9 +43,6 @@ services:
     ports:
       - "${CINEVOTE_DEMO_PORT:-8080}:8080"
     environment:
-      # Empty so the demo picks its own throwaway database and reseeds on every
-      # start, instead of the persistent path baked into the image.
-      CINEVOTE_DB: ""
       # A key is optional even here — the demo ships with its own poster data.
       # Get a free one at https://www.omdbapi.com/apikey.aspx to search live.
       OMDB_API_KEY: ${OMDB_API_KEY:-}

@@ -16,7 +16,7 @@
       </thead>
       <tbody>
       {{range .Movies}}
-        <tr{{if .Seen}} class="row-seen"{{end}}>
+        <tr id="film-{{.ID}}"{{if .Seen}} class="row-seen"{{end}}>
           <td>
             <span class="tabletitle">{{.Title}}</span>{{with .Year}} <span class="year">{{.}}</span>{{end}}
             {{with .IMDbURL}}<a class="imdb" href="{{.}}" target="_blank" rel="noopener noreferrer">IMDb ↗</a>{{end}}
@@ -29,11 +29,13 @@
             <div class="rowactions">
               <form method="post" action="/movies/{{.ID}}/seen">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="return" value="/admin">
                 <input type="hidden" name="seen" value="{{if .Seen}}0{{else}}1{{end}}">
                 <button class="btn btn-ghost btn-sm" type="submit">{{if .Seen}}Öppna igen{{else}}Sedd{{end}}</button>
               </form>
               <form method="post" action="/movies/{{.ID}}/delete" data-confirm="Ta bort {{.Title}} och alla röster på den?">
                 <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="return" value="/admin">
                 <button class="btn btn-danger btn-sm" type="submit">Ta bort</button>
               </form>
             </div>
