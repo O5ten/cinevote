@@ -14,12 +14,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mikaelo/cinevote/internal/auth"
-	"github.com/mikaelo/cinevote/internal/config"
-	"github.com/mikaelo/cinevote/internal/demo"
-	"github.com/mikaelo/cinevote/internal/poster"
-	"github.com/mikaelo/cinevote/internal/store"
-	"github.com/mikaelo/cinevote/internal/web"
+	"github.com/o5ten/cinevote/internal/auth"
+	"github.com/o5ten/cinevote/internal/config"
+	"github.com/o5ten/cinevote/internal/demo"
+	"github.com/o5ten/cinevote/internal/poster"
+	"github.com/o5ten/cinevote/internal/store"
+	"github.com/o5ten/cinevote/internal/web"
 )
 
 // version is stamped at build time with -ldflags "-X main.version=...".

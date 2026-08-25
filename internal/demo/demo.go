@@ -11,8 +11,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/mikaelo/cinevote/internal/auth"
-	"github.com/mikaelo/cinevote/internal/store"
+	"github.com/o5ten/cinevote/internal/auth"
+	"github.com/o5ten/cinevote/internal/store"
 )
 
 // Password is the shared password for every demo account, admin included. It

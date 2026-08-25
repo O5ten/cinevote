@@ -1,4 +1,4 @@
-module github.com/mikaelo/cinevote
+module github.com/o5ten/cinevote
 
 go 1.22
 

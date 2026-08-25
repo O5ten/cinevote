@@ -12,9 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/mikaelo/cinevote/internal/auth"
-	"github.com/mikaelo/cinevote/internal/poster"
-	"github.com/mikaelo/cinevote/internal/store"
+	"github.com/o5ten/cinevote/internal/auth"
+	"github.com/o5ten/cinevote/internal/poster"
+	"github.com/o5ten/cinevote/internal/store"
 )
 
 const (

@@ -4,7 +4,7 @@ services:
       context: .
       args:
         VERSION: ${VERSION:-dev}
-    image: ghcr.io/mikaelo/cinevote:latest
+    image: ghcr.io/o5ten/cinevote:latest
     container_name: cinevote
     restart: unless-stopped
     ports:
@@ -37,7 +37,7 @@ services:
     profiles: ["demo"]
     build:
       context: .
-    image: ghcr.io/mikaelo/cinevote:latest
+    image: ghcr.io/o5ten/cinevote:latest
     container_name: cinevote-demo
     command: ["-demo"]
     ports:

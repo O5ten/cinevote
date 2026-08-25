@@ -1,5 +1,7 @@
 # CineVote 🎬
 
+[![CI](https://github.com/o5ten/cinevote/actions/workflows/ci.yml/badge.svg)](https://github.com/o5ten/cinevote/actions/workflows/ci.yml)
+
 Ett litet filmröstningssystem för planerade filmkvällar. Alla lägger in förslag,
 alla har fem röster att fördela, och den film som flest personer röstat på är
 den som visas. När filmen är sedd markerar admin den — och alla som röstade på
@@ -24,13 +26,22 @@ i GitHub Actions.
 
 ## Demoläge — noll konfiguration
 
-Vill du bara se hur det ser ut? Starta med `-demo`. Ingen API-nyckel, inget
-admin-lösenord, ingen databas att sätta upp:
+Vill du bara se hur det ser ut? Starta med `-demo` — ingen API-nyckel, inget
+admin-lösenord, ingen databas att sätta upp.
+
+Från en klon:
 
 ```bash
+git clone https://github.com/o5ten/cinevote.git
+cd cinevote
 go run ./cmd/cinevote -demo        # eller: make demo
 docker compose --profile demo up   # eller: make compose-demo
-docker run --rm -p 8080:8080 -e CINEVOTE_DB= ghcr.io/mikaelo/cinevote -demo
+```
+
+Eller direkt från den publicerade imagen, utan att klona något:
+
+```bash
+docker run --rm -p 8080:8080 -e CINEVOTE_DB= ghcr.io/o5ten/cinevote:latest -demo
 ```
 
 Öppna <http://localhost:8080> och klicka på ett av demokontona på
@@ -50,6 +61,7 @@ självt. Använd det inte för en riktig filmkväll: alla delar ett känt lösen
 ### Med Docker Compose
 
 ```bash
+git clone https://github.com/o5ten/cinevote.git && cd cinevote
 cp .env.example .env      # fyll i OMDB_API_KEY
 docker compose up --build -d
 docker compose logs -f     # här står admin-lösenordet om du inte satt något
@@ -58,6 +70,8 @@ docker compose logs -f     # här står admin-lösenordet om du inte satt något
 Öppna <http://localhost:8080>.
 
 ### Lokalt
+
+Kräver Go 1.22 eller senare — inget annat, databasdrivaren är ren Go.
 
 ```bash
 export OMDB_API_KEY=...        # frivilligt, men posters blir tomma utan
@@ -180,9 +194,15 @@ inline-styles eller inline-script i mallarna, och inga externa fonter.
 1. **test** — `gofmt`-koll, `go mod tidy`-koll, `go vet`, `go test -race` med täckning.
 2. **build** — korskompilerar binärer för linux/amd64, linux/arm64 och darwin/arm64.
 3. **image** — bygger imagen för amd64 + arm64, pushar till
-   `ghcr.io/<repo>` (inte på PR:er) och rök-testar `/healthz` i en körande container.
+   `ghcr.io/o5ten/cinevote` (inte på PR:er) och rök-testar demoläget i en
+   körande container.
 
-Taggar (`v1.2.3`) blir imagetaggar `1.2.3`, `1.2` och `latest`.
+Taggar (`v1.2.3`) blir imagetaggar `1.2.3`, `1.2` och `latest`; pushar till
+`main` blir `main` och `latest` plus en `sha-`-tagg.
+
+Första pushen till `main` skapar paketet i GHCR. Det blir privat som standard —
+gör det publikt under **Packages → cinevote → Package settings** om vem som
+helst ska kunna `docker pull`:a det.
 
 ## Licens
 

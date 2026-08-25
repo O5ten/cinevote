@@ -1,5 +1,5 @@
 BINARY := cinevote
-IMAGE  := ghcr.io/mikaelo/cinevote
+IMAGE  := ghcr.io/o5ten/cinevote
 
 .PHONY: run demo build test fmt vet lint docker docker-run docker-demo compose compose-demo clean
 
