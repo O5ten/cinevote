@@ -145,9 +145,21 @@
     </select>
   </div>
 
+  <input type="hidden" name="view" value="{{.View}}">
+
   <div class="field field-actions filter-buttons">
     <button class="btn btn-primary" type="submit">Filtrera</button>
-    {{if .Filtering}}<a class="btn btn-ghost" href="/">Rensa</a>{{end}}
+    {{if .Filtering}}<a class="btn btn-ghost" href="/?view={{.View}}">Rensa</a>{{end}}
+  </div>
+
+  <div class="field viewswitch">
+    <label>Vy</label>
+    <div class="switch" role="group" aria-label="Välj vy">
+      <a class="switch-option{{if not .IsList}} on{{end}}" href="{{.CardsURL}}"
+         {{if not .IsList}}aria-current="true"{{end}}>Kort</a>
+      <a class="switch-option{{if .IsList}} on{{end}}" href="{{.ListURL}}"
+         {{if .IsList}}aria-current="true"{{end}}>Lista</a>
+    </div>
   </div>
 </form>
 
@@ -158,13 +170,34 @@
     <span class="section-note">{{len .Results}} av {{.TotalMovies}} {{plural .TotalMovies "film" "filmer"}}</span>
   </h2>
   {{if .Results}}
-  <div class="grid">
-    {{range .Results}}{{template "card" (dict "M" . "Variant" "grid" "Root" $)}}{{end}}
-  </div>
+    {{if .IsList}}
+      {{template "movietable" (dict "Movies" .Results "Root" $ "ShowRank" false)}}
+    {{else}}
+      <div class="grid">
+        {{range .Results}}{{template "card" (dict "M" . "Variant" "grid" "Root" $)}}{{end}}
+      </div>
+    {{end}}
   {{else}}
-  <p class="empty">Inga filmer matchar filtret. <a href="/">Visa alla</a>.</p>
+  <p class="empty">Inga filmer matchar filtret. <a href="/?view={{.View}}">Visa alla</a>.</p>
   {{end}}
 </section>
+{{else if .IsList}}
+
+<section class="section">
+  <h2 class="section-title">
+    Alla förslag
+    <span class="section-note">i röstordning — topp 3 har medalj</span>
+  </h2>
+  {{template "movietable" (dict "Movies" .Open "Root" $ "ShowRank" true)}}
+</section>
+
+{{if .Seen}}
+<section class="section section-seen">
+  <h2 class="section-title">Sedda filmer <span class="section-note">rösterna är återlämnade</span></h2>
+  {{template "movietable" (dict "Movies" .Seen "Root" $ "ShowRank" false)}}
+</section>
+{{end}}
+
 {{else}}
 
 {{if .Top}}

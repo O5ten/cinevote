@@ -52,7 +52,15 @@
 
 <footer class="footer">
   <span>{{.SiteName}} · filmröstning för filmkvällen</span>
-  {{if .LookupSource}}<span>Filmdata från {{.LookupSource}}</span>{{end}}
+  {{if .LookupSource}}
+  <span>
+    Filmdata från {{.LookupSource}} ·
+    <span id="quota-note" class="quota{{if .Usage.Exhausted}} quota-out{{else if .Usage.Low}} quota-low{{end}}"
+          title="Räknat sedan servern startade. {{.LookupSource}} rapporterar inte kvoten själv.">
+      {{if .Usage.Exhausted}}dagens {{.Usage.Limit}} anrop är slut{{else}}{{.Usage.Remaining}} av {{.Usage.Limit}} anrop kvar idag{{end}}
+    </span>
+  </span>
+  {{end}}
 </footer>
 
 <script src="/static/app.js?v={{.AssetVersion}}"></script>
@@ -112,12 +120,12 @@
       {{if not $m.Seen}}
         {{if $m.VotedByMe}}
         <form method="post" action="/movies/{{$m.ID}}/unvote">
-          <input type="hidden" name="csrf" value="{{$root.CSRF}}">
+          {{template "formcontext" $root}}
           <button class="btn btn-voted" type="submit">Ta tillbaka rösten</button>
         </form>
         {{else if $root.VotesLeft}}
         <form method="post" action="/movies/{{$m.ID}}/vote">
-          <input type="hidden" name="csrf" value="{{$root.CSRF}}">
+          {{template "formcontext" $root}}
           <button class="btn btn-vote" type="submit">Rösta</button>
         </form>
         {{else}}
@@ -127,7 +135,7 @@
 
       {{if $root.User.IsAdmin}}
         <form method="post" action="/movies/{{$m.ID}}/seen">
-          <input type="hidden" name="csrf" value="{{$root.CSRF}}">
+          {{template "formcontext" $root}}
           <input type="hidden" name="seen" value="{{if $m.Seen}}0{{else}}1{{end}}">
           <button class="btn btn-ghost" type="submit">{{if $m.Seen}}Tillbaka i röstningen{{else}}Markera som sedd{{end}}</button>
         </form>
@@ -135,11 +143,102 @@
 
       {{if or $root.User.IsAdmin (and (eq $m.SuggestedBy $root.User.Username) (eq $m.Votes 0) (not $m.Seen))}}
         <form method="post" action="/movies/{{$m.ID}}/delete" data-confirm="Ta bort {{$m.Title}}?">
-          <input type="hidden" name="csrf" value="{{$root.CSRF}}">
+          {{template "formcontext" $root}}
           <button class="btn btn-danger" type="submit" title="Ta bort filmen">Ta bort</button>
         </form>
       {{end}}
     </div>
   </div>
 </article>
+{{end}}
+
+{{/* formcontext is the CSRF token plus where this action should return to:
+     the same page, view and filters the reader is looking at. */}}
+{{define "formcontext"}}
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+{{with .ReturnTo}}<input type="hidden" name="return" value="{{.}}">{{end}}
+{{with .BackQuery}}<input type="hidden" name="back" value="{{.}}">{{end}}
+{{end}}
+
+{{/* movietable is the list layout: the same films and the same actions as the
+     cards, in a form that is quicker to scan and compare. Rank is shown when
+     the rows are in vote order. */}}
+{{define "movietable"}}
+{{$root := .Root}}{{$showRank := .ShowRank}}
+<div class="tablewrap">
+  <table class="table table-board">
+    <thead>
+      <tr>
+        {{if $showRank}}<th class="cell-rank">#</th>{{end}}
+        <th>Film</th>
+        <th class="cell-num">Betyg</th>
+        <th>Speltid</th>
+        <th>Genre</th>
+        <th>Regi</th>
+        <th class="cell-num">Röster</th>
+        <th>Föreslagen av</th>
+        <th class="right">Din röst</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Movies}}
+      <tr id="film-{{.ID}}" class="{{if .Seen}}row-seen{{end}}{{if .VotedByMe}} row-voted{{end}}">
+        {{if $showRank}}
+        <td class="cell-rank">
+          {{/* A medal needs actual backing, same rule as the card podium. */}}
+          {{if .Seen}}—{{else if and (medal .Rank) (gt .Votes 0)}}<span class="rank-medal" title="Plats {{.Rank}}">{{medal .Rank}}</span>{{else}}{{.Rank}}{{end}}
+        </td>
+        {{end}}
+        <td class="cell-film">
+          <a class="filmlink" href="/movies/{{.ID}}/similar" title="Visa liknande filmer">
+            <span class="thumb">{{template "poster" .}}</span>
+            <span class="filmname">
+              {{.Title}}{{with .Year}} <span class="year">{{.}}</span>{{end}}
+              {{if .Seen}}<span class="tag tag-seen">Sedd{{with date .SeenAt}} {{.}}{{end}}</span>{{end}}
+            </span>
+          </a>
+        </td>
+        <td class="cell-num">{{with .Rating}}<span class="chip chip-rating">★ {{.}}</span>{{else}}—{{end}}</td>
+        <td class="cell-muted">{{with .Runtime}}{{.}}{{else}}—{{end}}</td>
+        <td class="cell-muted">{{with .Genres}}{{.}}{{else}}—{{end}}</td>
+        <td class="cell-muted">{{with .Director}}<a href="/?director={{. | urlquery}}&view=list">{{.}}</a>{{else}}—{{end}}</td>
+        <td class="cell-num">
+          <strong class="votenum">{{.Votes}}</strong>
+          {{with .Voters}}<span class="voters" title="{{join . ", "}}">{{join . ", "}}</span>{{end}}
+        </td>
+        <td class="cell-muted">{{with .SuggestedBy}}{{.}}{{else}}—{{end}}</td>
+        <td class="right">
+          <div class="rowactions">
+            {{if .Seen}}
+              <span class="cell-muted">återlämnad</span>
+            {{else if .VotedByMe}}
+              <form method="post" action="/movies/{{.ID}}/unvote">
+                {{template "formcontext" $root}}
+                <button class="btn btn-voted btn-sm" type="submit">Ta tillbaka</button>
+              </form>
+            {{else if $root.VotesLeft}}
+              <form method="post" action="/movies/{{.ID}}/vote">
+                {{template "formcontext" $root}}
+                <button class="btn btn-vote btn-sm" type="submit">Rösta</button>
+              </form>
+            {{else}}
+              <button class="btn btn-vote btn-sm" type="button" disabled title="Du har inga röster kvar">Rösta</button>
+            {{end}}
+
+            {{if $root.User.IsAdmin}}
+              <form method="post" action="/movies/{{.ID}}/seen">
+                {{template "formcontext" $root}}
+                <input type="hidden" name="seen" value="{{if .Seen}}0{{else}}1{{end}}">
+                <button class="btn btn-ghost btn-sm" type="submit">{{if .Seen}}Öppna{{else}}Sedd{{end}}</button>
+              </form>
+            {{end}}
+          </div>
+        </td>
+      </tr>
+    {{else}}
+      <tr><td colspan="{{if $showRank}}9{{else}}8{{end}}" class="empty">Inga filmer här.</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
 {{end}}

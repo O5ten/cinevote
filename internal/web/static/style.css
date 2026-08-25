@@ -531,6 +531,29 @@ input[type="search"]:focus, select:focus {
   box-shadow: 0 0 0 3px rgba(46, 230, 197, 0.16);
 }
 
+/* Card / list toggle: two links styled as one segmented control. */
+.viewswitch { margin-left: auto; }
+.switch {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: rgba(6, 4, 15, 0.55);
+}
+.switch-option {
+  padding: 7px 15px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--muted);
+}
+.switch-option:hover { color: var(--text); text-decoration: none; }
+.switch-option.on {
+  background: var(--brand);
+  color: #16021d;
+}
+.switch-option.on:hover { color: #16021d; }
+
 .credits { margin: 0; font-size: 12.5px; color: var(--muted); }
 .credits a { color: #cbbcff; }
 
@@ -758,6 +781,182 @@ input[type="search"]:focus, select:focus {
 .voters-cell { max-width: 260px; color: var(--muted); }
 .rowactions { display: flex; gap: 8px; justify-content: flex-end; }
 
+/* The board as a table: dense enough to compare films at a glance, with the
+   same actions as the cards. */
+.table-board { min-width: 940px; }
+.table-board td { padding: 9px 12px; }
+.table-board tr:hover { background: rgba(255, 255, 255, 0.03); }
+.row-voted { box-shadow: inset 3px 0 0 var(--teal); }
+
+.cell-rank { width: 46px; text-align: center; color: var(--muted); font-weight: 700; }
+.rank-medal { font-size: 19px; }
+.cell-num { white-space: nowrap; }
+.cell-muted { color: var(--muted); max-width: 190px; }
+.cell-film { min-width: 230px; }
+
+.filmlink { display: flex; align-items: center; gap: 11px; color: var(--text); }
+.filmlink:hover { text-decoration: none; }
+.filmlink:hover .filmname { color: var(--teal); }
+.thumb {
+  display: block;
+  width: 32px;
+  height: 48px;
+  flex: 0 0 32px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.thumb .poster { width: 32px; height: 48px; aspect-ratio: auto; border-radius: 4px; font-size: 11px; }
+/* Inline flow, not flex: a long title should wrap mid-title and keep its year
+   on the same line, rather than orphaning the year below. */
+.filmname { display: block; font-weight: 700; }
+.filmname .year { font-weight: 500; }
+.filmname .tag { margin-left: 6px; vertical-align: 2px; }
+.votenum { font-size: 17px; color: var(--teal); }
+.table-board .voters {
+  display: block;
+  max-width: 150px;
+  font-weight: 400;
+}
+
+/* API quota ------------------------------------------------------------- */
+
+.quota { font-weight: 650; color: #cbbcff; }
+.quota-low { color: var(--amber); }
+.quota-out { color: var(--danger); }
+
+.quotapanel {
+  padding: 16px 20px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+.quotapanel.quota-low { border-color: rgba(255, 194, 71, 0.5); }
+.quotapanel.quota-out { border-color: rgba(255, 122, 122, 0.5); }
+.quotanums { font-size: 15px; color: #ded6f7; }
+.quotanums strong { font-size: 24px; color: var(--teal); }
+.quotapanel.quota-low .quotanums strong { color: var(--amber); }
+.quotapanel.quota-out .quotanums strong { color: var(--danger); }
+.quotaused { display: block; font-size: 12.5px; color: var(--muted); }
+.quotabar {
+  height: 8px;
+  margin: 11px 0 9px;
+  border-radius: 999px;
+  background: rgba(6, 4, 15, 0.6);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.quotafill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--brand);
+  transition: width 0.3s ease;
+}
+.quotapanel.quota-low .quotafill { background: linear-gradient(90deg, var(--amber), var(--coral)); }
+.quotapanel.quota-out .quotafill { background: var(--danger); }
+/* Width classes, because the CSP forbids inline styles. */
+.quotafill-0 { width: 0%; }
+.quotafill-1 { width: 1%; }
+.quotafill-2 { width: 2%; }
+.quotafill-3 { width: 3%; }
+.quotafill-4 { width: 4%; }
+.quotafill-5 { width: 5%; }
+.quotafill-6 { width: 6%; }
+.quotafill-7 { width: 7%; }
+.quotafill-8 { width: 8%; }
+.quotafill-9 { width: 9%; }
+.quotafill-10 { width: 10%; }
+.quotafill-11 { width: 11%; }
+.quotafill-12 { width: 12%; }
+.quotafill-13 { width: 13%; }
+.quotafill-14 { width: 14%; }
+.quotafill-15 { width: 15%; }
+.quotafill-16 { width: 16%; }
+.quotafill-17 { width: 17%; }
+.quotafill-18 { width: 18%; }
+.quotafill-19 { width: 19%; }
+.quotafill-20 { width: 20%; }
+.quotafill-21 { width: 21%; }
+.quotafill-22 { width: 22%; }
+.quotafill-23 { width: 23%; }
+.quotafill-24 { width: 24%; }
+.quotafill-25 { width: 25%; }
+.quotafill-26 { width: 26%; }
+.quotafill-27 { width: 27%; }
+.quotafill-28 { width: 28%; }
+.quotafill-29 { width: 29%; }
+.quotafill-30 { width: 30%; }
+.quotafill-31 { width: 31%; }
+.quotafill-32 { width: 32%; }
+.quotafill-33 { width: 33%; }
+.quotafill-34 { width: 34%; }
+.quotafill-35 { width: 35%; }
+.quotafill-36 { width: 36%; }
+.quotafill-37 { width: 37%; }
+.quotafill-38 { width: 38%; }
+.quotafill-39 { width: 39%; }
+.quotafill-40 { width: 40%; }
+.quotafill-41 { width: 41%; }
+.quotafill-42 { width: 42%; }
+.quotafill-43 { width: 43%; }
+.quotafill-44 { width: 44%; }
+.quotafill-45 { width: 45%; }
+.quotafill-46 { width: 46%; }
+.quotafill-47 { width: 47%; }
+.quotafill-48 { width: 48%; }
+.quotafill-49 { width: 49%; }
+.quotafill-50 { width: 50%; }
+.quotafill-51 { width: 51%; }
+.quotafill-52 { width: 52%; }
+.quotafill-53 { width: 53%; }
+.quotafill-54 { width: 54%; }
+.quotafill-55 { width: 55%; }
+.quotafill-56 { width: 56%; }
+.quotafill-57 { width: 57%; }
+.quotafill-58 { width: 58%; }
+.quotafill-59 { width: 59%; }
+.quotafill-60 { width: 60%; }
+.quotafill-61 { width: 61%; }
+.quotafill-62 { width: 62%; }
+.quotafill-63 { width: 63%; }
+.quotafill-64 { width: 64%; }
+.quotafill-65 { width: 65%; }
+.quotafill-66 { width: 66%; }
+.quotafill-67 { width: 67%; }
+.quotafill-68 { width: 68%; }
+.quotafill-69 { width: 69%; }
+.quotafill-70 { width: 70%; }
+.quotafill-71 { width: 71%; }
+.quotafill-72 { width: 72%; }
+.quotafill-73 { width: 73%; }
+.quotafill-74 { width: 74%; }
+.quotafill-75 { width: 75%; }
+.quotafill-76 { width: 76%; }
+.quotafill-77 { width: 77%; }
+.quotafill-78 { width: 78%; }
+.quotafill-79 { width: 79%; }
+.quotafill-80 { width: 80%; }
+.quotafill-81 { width: 81%; }
+.quotafill-82 { width: 82%; }
+.quotafill-83 { width: 83%; }
+.quotafill-84 { width: 84%; }
+.quotafill-85 { width: 85%; }
+.quotafill-86 { width: 86%; }
+.quotafill-87 { width: 87%; }
+.quotafill-88 { width: 88%; }
+.quotafill-89 { width: 89%; }
+.quotafill-90 { width: 90%; }
+.quotafill-91 { width: 91%; }
+.quotafill-92 { width: 92%; }
+.quotafill-93 { width: 93%; }
+.quotafill-94 { width: 94%; }
+.quotafill-95 { width: 95%; }
+.quotafill-96 { width: 96%; }
+.quotafill-97 { width: 97%; }
+.quotafill-98 { width: 98%; }
+.quotafill-99 { width: 99%; }
+.quotafill-100 { width: 100%; }
+
 .tag { padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; border: 1px solid var(--line-2); }
 .tag-seen  { color: var(--amber); border-color: rgba(255, 194, 71, 0.45); }
 .tag-open  { color: var(--teal);  border-color: rgba(46, 230, 197, 0.45); }
@@ -766,6 +965,7 @@ input[type="search"]:focus, select:focus {
 /* ------------------------------------------------------------ responsive --- */
 
 @media (max-width: 860px) {
+  .viewswitch { margin-left: 0; }
   .hero { grid-template-columns: 1fr; }
   .hero-art { width: min(190px, 45vw); }
   .podium { grid-template-columns: 1fr; }

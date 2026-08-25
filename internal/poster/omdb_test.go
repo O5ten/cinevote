@@ -2,6 +2,7 @@ package poster
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,7 +78,10 @@ func testService(t *testing.T) *Service {
 	t.Helper()
 	client := NewOMDb("test-key", nil)
 	client.base = omdbServer(t).URL + "/"
-	return &Service{provider: client}
+	// Wired the same way New does it, so request counting is exercised too.
+	svc := &Service{provider: client, meter: &meter{}}
+	client.meter = svc.meter
+	return svc
 }
 
 func TestServiceDisabledWithoutKey(t *testing.T) {
@@ -306,5 +310,115 @@ func TestDetailLookupsAreCached(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("made %d API calls for the same film, want 1", got)
+	}
+}
+
+// The API reports nothing about remaining quota, so the counter has to track
+// requests we actually send — and cache hits are not requests.
+func TestUsageCountsRequests(t *testing.T) {
+	svc := testService(t)
+
+	if got := svc.Usage(); got.Used != 0 || got.Limit != DailyRequestLimit || got.Remaining != DailyRequestLimit {
+		t.Fatalf("fresh usage = %+v", got)
+	}
+
+	if _, err := svc.Detail(context.Background(), "tt0083658"); err != nil {
+		t.Fatal(err)
+	}
+	after := svc.Usage()
+	if after.Used != 1 || after.Remaining != DailyRequestLimit-1 {
+		t.Fatalf("after one lookup: %+v", after)
+	}
+
+	// Same film again: served from cache, so the count must not move.
+	if _, err := svc.Detail(context.Background(), "tt0083658"); err != nil {
+		t.Fatal(err)
+	}
+	if cached := svc.Usage(); cached.Used != 1 {
+		t.Errorf("a cache hit was counted as an API request: %+v", cached)
+	}
+
+	// A search is one request plus one enrichment per unrated hit.
+	before := svc.Usage().Used
+	results, err := svc.Search(context.Background(), "dune saga", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spent := svc.Usage().Used - before
+	if spent != 1+len(results) {
+		t.Errorf("search spent %d requests for %d results, want %d", spent, len(results), 1+len(results))
+	}
+}
+
+func TestUsageFlagsRunningLow(t *testing.T) {
+	m := &meter{}
+	m.used = DailyRequestLimit - 50
+
+	got := m.snapshot("IMDb", DailyRequestLimit)
+	if !got.Low || got.Exhausted {
+		t.Errorf("50 left should read as low but not exhausted: %+v", got)
+	}
+	if got.Remaining != 50 || got.Percent != 95 {
+		t.Errorf("unexpected numbers: %+v", got)
+	}
+}
+
+// When OMDb says the allowance is gone, that has to be its own error so the UI
+// can explain it instead of blaming the network.
+func TestQuotaExceededIsReported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"Response":"False","Error":"Request limit reached!"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	client := NewOMDb("test-key", nil)
+	client.base = srv.URL + "/"
+	svc := &Service{provider: client, meter: &meter{}}
+	client.meter = svc.meter
+
+	_, err := svc.Search(context.Background(), "anything", 8)
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("err = %v, want ErrQuotaExceeded", err)
+	}
+	if got := svc.Usage(); !got.Exhausted || got.Remaining != 0 {
+		t.Errorf("usage should read as exhausted: %+v", got)
+	}
+}
+
+// Repeating a search must not spend the allowance again: it is the most
+// expensive single action, at one request per result plus one for the search.
+func TestRepeatedSearchIsFree(t *testing.T) {
+	svc := testService(t)
+	ctx := context.Background()
+
+	first, err := svc.Search(ctx, "blade runner", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spent := svc.Usage().Used
+	if spent == 0 {
+		t.Fatal("the first search should cost something")
+	}
+
+	second, err := svc.Search(ctx, "Blade Runner", 8) // different case, same query
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.Usage().Used != spent {
+		t.Errorf("a repeated search spent %d more requests", svc.Usage().Used-spent)
+	}
+	if len(second) != len(first) || second[0].Title != first[0].Title {
+		t.Errorf("cached results differ: %v vs %v", first, second)
+	}
+
+	// The caller may sort what it gets without corrupting the cache.
+	second[0] = Result{Title: "mutated"}
+	third, err := svc.Search(ctx, "blade runner", 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third[0].Title == "mutated" {
+		t.Error("the cache handed out a mutable reference")
 	}
 }

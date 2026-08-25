@@ -19,6 +19,7 @@ type TMDB struct {
 	apiKey string
 	http   *http.Client
 	base   string
+	meter  *meter // counts requests against the daily allowance
 }
 
 func NewTMDB(apiKey string, hc *http.Client) *TMDB {
@@ -196,6 +197,7 @@ func (t *TMDB) get(ctx context.Context, path string, params url.Values, out any)
 		params = url.Values{}
 	}
 	params.Set("api_key", t.apiKey)
+	t.meter.record()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.base+path+"?"+params.Encode(), nil)
 	if err != nil {

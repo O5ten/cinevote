@@ -114,6 +114,21 @@ How lookups work:
   browser cannot invent metadata and the API key never leaves the server.
 * Without a key everything still works — paste a poster URL yourself.
 
+### Watching the API allowance
+
+The free OMDb tier allows 1,000 requests a day, and the API reports nothing
+about what's left — no header, no field. So CineVote counts what it sends: the
+footer shows how many calls remain, and the admin page has a meter with the
+detail. The count starts fresh whenever the app starts, so it is a floor rather
+than gospel if the key is shared with something else.
+
+One search costs one request plus one per result shown, because the search
+response carries no rating and the results have to be enriched before they can
+be ranked. That's the expensive part, so whole result sets are cached: repeating
+a search, or typing towards a title you already looked up, is free. If the
+allowance does run out, the search box says so plainly and you can still add
+films by hand.
+
 ### Similar films
 
 Every card has a **Liknande** link. That page has two halves:
@@ -145,11 +160,21 @@ view is a link you can paste in the group chat:
 | `min_rating` | `6`, `7`, `8`, `8.5` … films without a rating are excluded |
 | `sort` | `votes` (default), `rating`, `year`, `new`, `title` |
 | `show` | `open` (default), `all`, `seen` |
+| `view` | `cards` (default) or `list` |
 
 Equal vote counts are broken by rating, so the better-reviewed film is listed
-first — the same preference applies wherever films are ranked. While a filter is active the podium is hidden: those top-three ranks
-describe the whole board, and showing them beside a filtered list would be
-misleading.
+first — the same preference applies wherever films are ranked. While a filter is
+active the podium is hidden: those top-three ranks describe the whole board, and
+showing them beside a filtered list would be misleading.
+
+### Two layouts
+
+The toggle in the filter bar switches between **Kort** (poster cards, the
+default) and **Lista** — one table with rating, runtime, genre, director, votes
+and voters side by side, for when the board has grown past comfortable
+scrolling. You can vote straight from a row, and the top three keep their
+medals. The choice is remembered, and voting returns you to the same view, the
+same filters and the row you were on.
 
 ## Configuration
 

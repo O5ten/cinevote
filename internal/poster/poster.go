@@ -83,6 +83,8 @@ type Service struct {
 	provider Provider
 	tmdb     *TMDB
 	cache    detailCache
+	searches searchCache
+	meter    *meter
 }
 
 // enrichConcurrency caps how many detail lookups one search fires at once —
@@ -98,6 +100,43 @@ type detailCache struct {
 }
 
 const detailCacheMax = 512
+
+// searchCache remembers whole result sets. A search costs one request plus one
+// per result to enrich, so repeating one is the most expensive thing a user can
+// do by accident.
+type searchCache struct {
+	mu      sync.Mutex
+	entries map[string][]Result
+}
+
+const searchCacheMax = 128
+
+func (c *searchCache) get(key string) ([]Result, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	results, ok := c.entries[key]
+	if !ok {
+		return nil, false
+	}
+	// Hand back a copy: callers sort and mutate what they get.
+	out := make([]Result, len(results))
+	copy(out, results)
+	return out, true
+}
+
+func (c *searchCache) put(key string, results []Result) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string][]Result, 32)
+	}
+	if len(c.entries) >= searchCacheMax {
+		c.entries = make(map[string][]Result, 32)
+	}
+	stored := make([]Result, len(results))
+	copy(stored, results)
+	c.entries[key] = stored
+}
 
 func (c *detailCache) get(id string) (Result, bool) {
 	c.mu.Lock()
@@ -126,15 +165,18 @@ func (c *detailCache) put(id string, res Result) {
 func New(source, omdbKey, tmdbKey string) (*Service, error) {
 	omdbKey, tmdbKey = strings.TrimSpace(omdbKey), strings.TrimSpace(tmdbKey)
 
-	svc := &Service{}
+	svc := &Service{meter: &meter{}}
 	if tmdbKey != "" {
 		svc.tmdb = NewTMDB(tmdbKey, nil)
+		svc.tmdb.meter = svc.meter
 	}
 
 	switch Source(strings.ToLower(strings.TrimSpace(source))) {
 	case SourceIMDb:
 		if omdbKey != "" {
-			svc.provider = NewOMDb(omdbKey, nil)
+			client := NewOMDb(omdbKey, nil)
+			client.meter = svc.meter
+			svc.provider = client
 		}
 	case SourceTMDB:
 		if svc.tmdb != nil {
@@ -145,7 +187,9 @@ func New(source, omdbKey, tmdbKey string) (*Service, error) {
 	case "":
 		switch {
 		case omdbKey != "":
-			svc.provider = NewOMDb(omdbKey, nil)
+			client := NewOMDb(omdbKey, nil)
+			client.meter = svc.meter
+			svc.provider = client
 		case svc.tmdb != nil:
 			svc.provider = svc.tmdb
 		}
@@ -185,6 +229,13 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Result
 		limit = 8
 	}
 
+	// Typing towards a title fires several searches, and people search for the
+	// same film repeatedly. Both are free after the first time.
+	key := strings.ToLower(query) + "\x00" + strconv.Itoa(limit)
+	if cached, ok := s.searches.get(key); ok {
+		return cached, nil
+	}
+
 	results, err := s.provider.Search(ctx, query, limit)
 	if err != nil || len(results) == 0 {
 		return results, err
@@ -193,6 +244,7 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]Result
 	// gaps before ranking, otherwise "best rated first" has nothing to sort on.
 	s.enrich(ctx, results)
 	rankByRating(results, query)
+	s.searches.put(key, results)
 	return results, nil
 }
 
@@ -358,6 +410,15 @@ func (r Result) detailID() string {
 		return fmt.Sprint(r.TMDBID)
 	}
 	return r.IMDbID
+}
+
+// Usage reports how much of the daily API allowance this run has spent. The
+// backend tells us nothing about it, so this counts requests we sent.
+func (s *Service) Usage() Usage {
+	if !s.Enabled() {
+		return Usage{}
+	}
+	return s.meter.snapshot(s.SourceLabel(), DailyRequestLimit)
 }
 
 // RecommendationsEnabled reports whether "films like this one" can be

@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -727,6 +726,169 @@ func TestSimilarPageForUnknownMovie(t *testing.T) {
 	mustContain(t, body, "Filmen finns inte", "missing movie")
 }
 
+// The card layout is what everyone starts on; the table is opt-in.
+func TestCardViewIsTheDefault(t *testing.T) {
+	_, ada := filterApp(t)
+
+	_, body := ada.get("/")
+	mustContain(t, body, `class="grid"`, "card layout")
+	if strings.Contains(body, "table-board") {
+		t.Error("the table should not render until it is asked for")
+	}
+	// The toggle offers the other view.
+	mustContain(t, body, `href="/?view=list"`, "link to the list view")
+}
+
+func TestListViewRendersAVotableTable(t *testing.T) {
+	a, ada := filterApp(t)
+
+	// One vote, so there is a leader to medal.
+	movies, err := a.store.Movies(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ada.get("/")
+	ada.post("/movies/"+itoa64(movies[0].ID)+"/vote", nil)
+
+	_, body := ada.get("/?view=list")
+	mustContain(t, body, "table-board", "table layout")
+	mustContain(t, body, "Alla förslag", "table heading")
+	if strings.Contains(body, `class="podium"`) {
+		t.Error("the podium belongs to the card layout only")
+	}
+	// Every film is a row, and the top three keep their medals.
+	for _, title := range []string{"Dune: Part One", "Blade Runner 2049", "Sharknado"} {
+		mustContain(t, body, title, "row for "+title)
+	}
+	mustContain(t, body, "🥇", "gold medal on the leading row")
+
+	// Rows carry vote forms that return to the list view.
+	id := itoa64(movies[1].ID)
+	mustContain(t, body, `action="/movies/`+id+`/vote"`, "vote form in the table")
+	mustContain(t, body, `name="back" value="view=list"`, "the row remembers the view")
+}
+
+// Voting from the table has to come back to the table, at the same row.
+func TestVotingFromTheListViewStaysInIt(t *testing.T) {
+	a, ada := filterApp(t)
+
+	movies, err := a.store.Movies(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := itoa64(movies[0].ID)
+
+	ada.get("/?view=list")
+	noRedirect := *ada.http
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := noRedirect.PostForm(a.ts.URL+"/movies/"+id+"/vote", url.Values{
+		"csrf": {ada.csrf},
+		"back": {"view=list"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Location"); got != "/?view=list#film-"+id {
+		t.Fatalf("Location = %q, want the list view anchored at the film", got)
+	}
+
+	// And the vote landed.
+	_, body := ada.get("/?view=list")
+	mustContain(t, body, "4 / 5 röster kvar", "vote counted")
+	mustContain(t, body, "Ta tillbaka", "the row now offers to undo")
+}
+
+// Filters have to survive the round trip too, not just the view.
+func TestVotingKeepsActiveFilters(t *testing.T) {
+	a, ada := filterApp(t)
+	movies, err := a.store.Movies(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := itoa64(movies[0].ID)
+
+	noRedirect := *ada.http
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	ada.get("/?view=list&genre=Drama&sort=rating")
+	resp, err := noRedirect.PostForm(a.ts.URL+"/movies/"+id+"/vote", url.Values{
+		"csrf": {ada.csrf},
+		"back": {"view=list&genre=Drama&sort=rating"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	got := resp.Header.Get("Location")
+	for _, want := range []string{"view=list", "genre=Drama", "sort=rating", "#film-" + id} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Location %q lost %q", got, want)
+		}
+	}
+}
+
+// A crafted return target must not turn a vote into an open redirect.
+func TestReturnTargetIsSanitised(t *testing.T) {
+	a, ada := filterApp(t)
+	movies, err := a.store.Movies(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := itoa64(movies[0].ID)
+
+	noRedirect := *ada.http
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	ada.get("/")
+	resp, err := noRedirect.PostForm(a.ts.URL+"/movies/"+id+"/vote", url.Values{
+		"csrf":   {ada.csrf},
+		"return": {"https://evil.example/"},
+		"back":   {"view=list&evil=payload&q=dune"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	got := resp.Header.Get("Location")
+	if strings.Contains(got, "evil") || !strings.HasPrefix(got, "/?") {
+		t.Fatalf("Location = %q, want a sanitised local path", got)
+	}
+	if !strings.Contains(got, "view=list") || !strings.Contains(got, "q=dune") {
+		t.Errorf("Location = %q should still keep the known parameters", got)
+	}
+}
+
+// Choosing a view sticks, so clicking around does not throw you back to cards.
+func TestViewChoiceIsRemembered(t *testing.T) {
+	_, ada := filterApp(t)
+
+	if _, body := ada.get("/?view=list"); !strings.Contains(body, "table-board") {
+		t.Fatal("list view did not render")
+	}
+	// No view parameter this time: the earlier choice should still apply.
+	_, body := ada.get("/")
+	mustContain(t, body, "table-board", "remembered list view")
+
+	// And it can be switched back.
+	if _, body := ada.get("/?view=cards"); strings.Contains(body, "table-board") {
+		t.Error("switching back to cards did not take effect")
+	}
+	if _, body := ada.get("/"); strings.Contains(body, "table-board") {
+		t.Error("the switch back to cards was not remembered")
+	}
+}
+
+// With no key configured there is no quota to report.
+func TestQuotaHiddenWithoutAProvider(t *testing.T) {
+	_, ada := filterApp(t)
+	_, body := ada.get("/")
+	if strings.Contains(body, "anrop kvar idag") {
+		t.Error("a deployment with no API key should not show an API quota")
+	}
+}
+
 func TestUnknownPathIs404(t *testing.T) {
 	a := newApp(t, nil)
 	status, body := a.client().get("/no-such-page")
@@ -757,8 +919,6 @@ func TestStaticAssetsAreServed(t *testing.T) {
 		}
 	}
 }
-
-func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
 
 // section returns the slice of body between two markers, for asserting that a
 // title appears inside a specific block rather than anywhere on the page.

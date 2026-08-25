@@ -445,6 +445,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page
 	data["CSRF"] = csrfFrom(r.Context())
 	data["MaxVotes"] = s.cfg.MaxVotes
 	data["LookupEnabled"] = s.posters.Enabled()
+	data["Usage"] = s.posters.Usage()
 	data["LookupSource"] = s.posters.SourceLabel()
 	data["AssetVersion"] = s.assetVersion
 	data["OMDbKeyURL"] = OMDbKeyURL

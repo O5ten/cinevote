@@ -16,6 +16,7 @@ type OMDb struct {
 	apiKey string
 	http   *http.Client
 	base   string // overridable for tests
+	meter  *meter // counts requests against the daily allowance
 }
 
 func NewOMDb(apiKey string, hc *http.Client) *OMDb {
@@ -70,8 +71,8 @@ func (o *OMDb) Search(ctx context.Context, query string, limit int) ([]Result, e
 	// OMDb answers "False" for an empty result set as well as for real errors;
 	// "not found" is not something the user needs to see as a failure.
 	if !strings.EqualFold(body.Response, "True") {
-		if body.Error != "" && !strings.Contains(strings.ToLower(body.Error), "not found") {
-			return nil, fmt.Errorf("omdb search: %s", body.Error)
+		if err := o.apiError("search", body.Error); err != nil {
+			return nil, err
 		}
 		return nil, nil
 	}
@@ -112,8 +113,8 @@ func (o *OMDb) Detail(ctx context.Context, id string) (*Result, error) {
 		return nil, err
 	}
 	if !strings.EqualFold(body.Response, "True") {
-		if body.Error != "" && !strings.Contains(strings.ToLower(body.Error), "not found") {
-			return nil, fmt.Errorf("omdb detail: %s", body.Error)
+		if err := o.apiError("detail", body.Error); err != nil {
+			return nil, err
 		}
 		return nil, nil
 	}
@@ -137,6 +138,7 @@ func (o *OMDb) Detail(ctx context.Context, id string) (*Result, error) {
 func (o *OMDb) get(ctx context.Context, params url.Values, out any) error {
 	params.Set("apikey", o.apiKey)
 	params.Set("r", "json")
+	o.meter.record()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.base+"?"+params.Encode(), nil)
 	if err != nil {
@@ -156,6 +158,25 @@ func (o *OMDb) get(ctx context.Context, params url.Values, out any) error {
 		return fmt.Errorf("omdb decode: %w", err)
 	}
 	return nil
+}
+
+// apiError turns OMDb's "Response": "False" into an error, or nil when it just
+// means "nothing found". Hitting the daily limit gets its own error so the UI
+// can explain it rather than blaming the network.
+func (o *OMDb) apiError(what, message string) error {
+	if message == "" {
+		return nil
+	}
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "not found"):
+		return nil
+	case strings.Contains(lower, "limit reached"), strings.Contains(lower, "request limit"):
+		o.meter.markExhausted()
+		return fmt.Errorf("omdb %s: %w", what, ErrQuotaExceeded)
+	default:
+		return fmt.Errorf("omdb %s: %s", what, message)
+	}
 }
 
 // parseVoteCount reads OMDb's thousands-separated vote count ("2,600,123").

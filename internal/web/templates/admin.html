@@ -7,6 +7,32 @@
     och starta om med <code>OMDB_API_KEY=din-nyckel</code>.{{end}}</p>
 </section>
 
+{{if .LookupEnabled}}
+<section class="section">
+  <h2 class="section-title">API-kvot <span class="section-note">{{.LookupSource}}</span></h2>
+  <div class="quotapanel{{if .Usage.Exhausted}} quota-out{{else if .Usage.Low}} quota-low{{end}}">
+    <div class="quotanums">
+      <strong>{{.Usage.Remaining}}</strong> av {{.Usage.Limit}} anrop kvar
+      <span class="quotaused">{{.Usage.Used}} använda sedan servern startade</span>
+    </div>
+    <div class="quotabar" role="img"
+         aria-label="{{.Usage.Used}} av {{.Usage.Limit}} anrop använda">
+      <span class="quotafill quotafill-{{.Usage.Percent}}"></span>
+    </div>
+    <p class="hint">
+      {{if .Usage.Exhausted}}
+        {{.LookupSource}} svarar att dagens kvot är slut. Sökning och automatisk
+        hämtning av posters pausar till imorgon — lägg till filmer manuellt tills dess.
+      {{else}}
+        Gratisnivån ger {{.Usage.Limit}} anrop per dygn. {{.LookupSource}} rapporterar inte
+        kvoten själv, så det här är räknat av CineVote sedan servern startade och nollställs
+        vid omstart. Sökträffar cachas, så samma sökning kostar bara en gång.
+      {{end}}
+    </p>
+  </div>
+</section>
+{{end}}
+
 <section class="section">
   <h2 class="section-title">Filmer</h2>
   <div class="tablewrap">

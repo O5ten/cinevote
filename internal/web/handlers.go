@@ -18,6 +18,14 @@ import (
 	"github.com/o5ten/cinevote/internal/store"
 )
 
+// Board layouts. Cards are the default; the table is for scanning a long list.
+const (
+	ViewCards = "cards"
+	ViewList  = "list"
+
+	viewCookie = "cinevote_view"
+)
+
 const (
 	maxTitleLen    = 200
 	maxOverviewLen = 2000
@@ -55,6 +63,40 @@ func (s *Server) handleNotFound(w http.ResponseWriter, r *http.Request) {
 
 /* ------------------------------------------------------------- the board --- */
 
+// boardView decides which layout to render. An explicit ?view= wins and is
+// remembered, so the choice survives clicking around; otherwise the last choice
+// applies, and failing that the card layout everyone starts on.
+func (s *Server) boardView(w http.ResponseWriter, r *http.Request) string {
+	if requested := r.URL.Query().Get("view"); requested != "" {
+		view := ViewCards
+		if requested == ViewList {
+			view = ViewList
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     viewCookie,
+			Value:    view,
+			Path:     "/",
+			MaxAge:   int((365 * 24 * time.Hour).Seconds()),
+			HttpOnly: true,
+			Secure:   s.cfg.SecureCookies,
+			SameSite: http.SameSiteLaxMode,
+		})
+		return view
+	}
+	if c, err := r.Cookie(viewCookie); err == nil && c.Value == ViewList {
+		return ViewList
+	}
+	return ViewCards
+}
+
+// viewURL rebuilds the current board URL with a different layout, so the toggle
+// keeps whatever filters are active.
+func viewURL(r *http.Request, view string) string {
+	values := r.URL.Query()
+	values.Set("view", view)
+	return "/?" + values.Encode()
+}
+
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	user := userFrom(ctx)
@@ -81,6 +123,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := browse.ParseQuery(r.URL.Query())
+	view := s.boardView(w, r)
 	data := map[string]any{
 		"Title":     "Filmröstning",
 		"VotesUsed": used,
@@ -88,6 +131,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"People":    people,
 		"Query":     query,
 		"Filtering": query.Active(),
+		"View":      view,
+		"IsList":    view == ViewList,
+		"CardsURL":  viewURL(r, ViewCards),
+		"ListURL":   viewURL(r, ViewList),
+		// Action forms carry these so voting returns to the same view, filters
+		// and scroll anchor instead of dumping you on a fresh board.
+		"BackQuery": r.URL.RawQuery,
+		"ReturnTo":  "/",
 		// Dropdown contents come from the board itself, so they only ever
 		// offer filters that can actually match something.
 		"AllGenres":    browse.Genres(movies),
@@ -120,6 +171,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data["Rest"] = rest
 	data["Seen"] = seen
 	data["Winner"] = firstMovie(top)
+	// The list layout wants one ranked table rather than podium plus grid.
+	data["Open"] = append(append([]store.Movie{}, top...), rest...)
 	s.render(w, r, http.StatusOK, "index.html", data)
 }
 
@@ -629,6 +682,7 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		"Users":     users,
 		"Movies":    movies,
 		"VotesLeft": left,
+		"ReturnTo":  "/admin",
 	})
 }
 
@@ -666,8 +720,17 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		found, err := s.posters.Search(ctx, query, searchLimit)
 		if err != nil {
 			s.log.Warn("metadata search failed", "query", query, "err", err)
+			if errors.Is(err, poster.ErrQuotaExceeded) {
+				writeJSON(w, http.StatusTooManyRequests, map[string]any{
+					"error": "Dagens " + itoa(poster.DailyRequestLimit) + " anrop till " +
+						s.posters.SourceLabel() + " är slut. Fyll i filmen manuellt tills imorgon.",
+					"usage": s.posters.Usage(),
+				})
+				return
+			}
 			writeJSON(w, http.StatusBadGateway, map[string]any{
 				"error": "Kunde inte nå " + s.posters.SourceLabel() + " just nu. Fyll i titeln manuellt.",
+				"usage": s.posters.Usage(),
 			})
 			return
 		}
@@ -678,6 +741,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		"enabled": s.posters.Enabled(),
 		"source":  s.posters.SourceLabel(),
 		"results": results,
+		// So the page can keep the quota counter current without a reload.
+		"usage": s.posters.Usage(),
 	})
 }
 
@@ -716,14 +781,44 @@ func movieAnchor(movieID int64) string {
 	return "film-" + strconv.FormatInt(movieID, 10)
 }
 
-// returnTarget is the page a form wants to go back to. Only the app's own two
-// boards are accepted, so a crafted "return" value cannot bounce anyone
-// somewhere else.
+// boardParams are the query parameters a form may ask to be carried back.
+// Anything else in a submitted "back" value is dropped.
+var boardParams = []string{"q", "genre", "director", "min_rating", "sort", "show", "view"}
+
+// similarPath matches the one other page that hosts vote buttons.
+var similarPath = regexp.MustCompile(`^/movies/[0-9]{1,18}/similar$`)
+
+// returnTarget is the page a form wants to go back to, rebuilt from an
+// allowlist. Voting should return you to the same view, filtered the same way —
+// but a crafted "return" or "back" value must not be able to bounce anyone
+// somewhere else, so nothing is echoed back verbatim.
 func returnTarget(r *http.Request) string {
-	if r.FormValue("return") == "/admin" {
-		return "/admin"
+	base := "/"
+	switch requested := r.FormValue("return"); {
+	case requested == "/admin":
+		base = "/admin"
+	case similarPath.MatchString(requested):
+		base = requested
 	}
-	return "/"
+
+	raw := strings.TrimPrefix(r.FormValue("back"), "?")
+	if raw == "" {
+		return base
+	}
+	submitted, err := url.ParseQuery(raw)
+	if err != nil {
+		return base
+	}
+	keep := url.Values{}
+	for _, key := range boardParams {
+		if v := strings.TrimSpace(submitted.Get(key)); v != "" {
+			keep.Set(key, v)
+		}
+	}
+	if len(keep) == 0 {
+		return base
+	}
+	return base + "?" + keep.Encode()
 }
 
 // fail logs the real error and shows the user a short explanation.
@@ -744,6 +839,8 @@ func parseInt64(raw string) int64 {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
 
 func validPosterURL(raw string) bool {
 	u, err := url.Parse(raw)

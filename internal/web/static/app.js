@@ -180,15 +180,21 @@
       })
         .then(function (resp) {
           return resp.json().then(function (body) {
-            if (!resp.ok) throw new Error(body.error || "Sökningen misslyckades.");
+            if (!resp.ok) {
+              var failure = new Error(body.error || "Sökningen misslyckades.");
+              failure.usage = body.usage; // still worth reporting the quota
+              throw failure;
+            }
             return body;
           });
         })
         .then(function (body) {
+          updateQuota(body.usage);
           render(body.results || []);
         })
         .catch(function (err) {
           if (err.name === "AbortError") return; // superseded by a newer search
+          updateQuota(err.usage);
           message(err.message || "Sökningen misslyckades. Fyll i uppgifterna själv.");
         })
         .finally(function () {
@@ -300,6 +306,19 @@
       if (movie.poster_url) posterURL.value = movie.poster_url;
       if (movie.overview) overview.value = movie.overview;
       message("Valt: " + movie.title + (movie.year ? " (" + movie.year + ")" : "") + ".");
+    }
+
+    // updateQuota keeps the footer counter honest as searches are made, so it
+    // does not sit there claiming a number from page load.
+    function updateQuota(usage) {
+      var note = document.getElementById("quota-note");
+      if (!note || !usage || !usage.limit) return;
+
+      note.textContent = usage.exhausted
+        ? "dagens " + usage.limit + " anrop är slut"
+        : usage.remaining + " av " + usage.limit + " anrop kvar idag";
+      note.classList.toggle("quota-out", !!usage.exhausted);
+      note.classList.toggle("quota-low", !usage.exhausted && !!usage.low);
     }
 
     // thumbnail is the poster, or a coloured placeholder — including when the
