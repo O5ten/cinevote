@@ -17,6 +17,7 @@ import (
 	"github.com/o5ten/cinevote/internal/auth"
 	"github.com/o5ten/cinevote/internal/config"
 	"github.com/o5ten/cinevote/internal/demo"
+	"github.com/o5ten/cinevote/internal/mattermost"
 	"github.com/o5ten/cinevote/internal/poster"
 	"github.com/o5ten/cinevote/internal/store"
 	"github.com/o5ten/cinevote/internal/web"
@@ -28,6 +29,8 @@ var version = "dev"
 func main() {
 	demoMode := flag.Bool("demo", false,
 		"start in demo mode: throwaway database seeded with accounts, films and votes")
+	envFile := flag.String("env", config.DefaultEnvFile,
+		"file of KEY=value settings to read if it exists; the real environment wins")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -37,6 +40,13 @@ func main() {
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// A .env file beside the binary (or mounted into the container) is read
+	// before anything looks at the environment.
+	if err := config.LoadEnvFile(*envFile); err != nil {
+		log.Error("fatal", "err", err)
+		os.Exit(1)
+	}
 	if err := run(log, *demoMode); err != nil {
 		log.Error("fatal", "err", err)
 		os.Exit(1)
@@ -73,7 +83,25 @@ func run(log *slog.Logger, demoFlag bool) error {
 	defer st.Close()
 	st.MaxVotes = cfg.MaxVotes
 
-	if err := bootstrapAdmin(context.Background(), st, cfg, log); err != nil {
+	// Mattermost mode has no accounts of its own, so there is no admin account
+	// to create: the admin password grants the role to whoever uses it.
+	chat := mattermost.New(cfg.Mattermost.URL, cfg.Mattermost.Token)
+	if cfg.UseMattermost() {
+		bot, err := chat.Verify(context.Background())
+		if err != nil {
+			return fmt.Errorf("mattermost: %w", err)
+		}
+		log.Info("mattermost identifies people", "server", cfg.Mattermost.URL, "as", bot.Username)
+		if cfg.AdminPassword == "" {
+			generated, err := auth.Token()
+			if err != nil {
+				return err
+			}
+			cfg.AdminPassword = generated[:16]
+			log.Warn("generated admin password — save it now, it is not shown again",
+				"password", cfg.AdminPassword)
+		}
+	} else if err := bootstrapAdmin(context.Background(), st, cfg, log); err != nil {
 		return err
 	}
 
@@ -94,7 +122,7 @@ func run(log *slog.Logger, demoFlag bool) error {
 			"get_a_free_key", web.OMDbKeyURL)
 	}
 
-	srv, err := web.New(cfg, st, posters, log)
+	srv, err := web.New(cfg, st, posters, chat, log)
 	if err != nil {
 		return err
 	}
@@ -116,7 +144,8 @@ func run(log *slog.Logger, demoFlag bool) error {
 	errc := make(chan error, 1)
 	go func() {
 		log.Info("cinevote listening",
-			"version", version, "addr", cfg.Addr, "db", cfg.DBPath, "votes_per_user", cfg.MaxVotes)
+			"version", version, "addr", cfg.Addr, "db", cfg.DBPath,
+			"votes_per_user", cfg.MaxVotes, "identity", identityMode(cfg))
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 		}
@@ -135,6 +164,14 @@ func run(log *slog.Logger, demoFlag bool) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
+}
+
+// identityMode names how people sign in, for the startup log.
+func identityMode(cfg config.Config) string {
+	if cfg.UseMattermost() {
+		return "mattermost"
+	}
+	return "accounts"
 }
 
 // bootstrapAdmin makes sure the single admin account exists. With no password

@@ -190,10 +190,22 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
+	// Somebody who already gave the password only has to say who they are.
+	if _, pending := s.pendingRole(r); pending && s.cfg.UseMattermost() {
+		http.Redirect(w, r, "/jagar", http.StatusSeeOther)
+		return
+	}
 	s.render(w, r, http.StatusOK, "login.html", map[string]any{"Title": "Logga in"})
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// With Mattermost configured there are no per-person accounts: one shared
+	// password, then pick yourself out of the chat directory.
+	if s.cfg.UseMattermost() {
+		s.handleSharedLogin(w, r)
+		return
+	}
+
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
 
@@ -310,6 +322,13 @@ func plural(n int) string {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	s.endSession(w, r)
+	s.clearPending(w)
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+// endSession forgets the session both server- and browser-side.
+func (s *Server) endSession(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
 		if err := s.store.DeleteSession(r.Context(), c.Value); err != nil {
 			s.log.Error("delete session", "err", err)
@@ -319,10 +338,18 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
 		HttpOnly: true, Secure: s.cfg.SecureCookies, SameSite: http.SameSiteLaxMode,
 	})
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
+// startSession opens a session for an account whose own flag decides whether it
+// is the admin — CineVote's own login.
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *store.User) error {
+	return s.startSessionAs(w, r, user, "")
+}
+
+// startSessionAs opens a session, optionally carrying a role granted by the
+// password rather than by the account. That is how Mattermost mode has an
+// admin without an admin account.
+func (s *Server) startSessionAs(w http.ResponseWriter, r *http.Request, user *store.User, role string) error {
 	token, err := auth.Token()
 	if err != nil {
 		return err
@@ -332,7 +359,7 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *stor
 		return err
 	}
 	expires := time.Now().Add(s.cfg.SessionTTL)
-	if err := s.store.CreateSession(r.Context(), user.ID, token, csrf, expires); err != nil {
+	if err := s.store.CreateSession(r.Context(), user.ID, token, csrf, role, expires); err != nil {
 		return err
 	}
 	http.SetCookie(w, &http.Cookie{

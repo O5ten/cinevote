@@ -1,0 +1,48 @@
+{{define "content"}}
+<section class="auth auth-wide">
+  <h1 class="auth-title">Vem är du?</h1>
+  <p class="auth-sub">
+    Välj ditt Mattermost-konto. Dina röster och förslag hänger på det, så
+    nästa gång räcker lösenordet.
+  </p>
+
+  {{if .AsAdmin}}
+  <p class="rolenote">Du loggade in med adminlösenordet — du kan markera filmer som sedda.</p>
+  {{end}}
+
+  {{with .Error}}<p class="formerror" role="alert">{{.}}</p>{{end}}
+
+  <form class="authform" method="post" action="/jagar">
+    <div class="field field-wide">
+      <label for="member">Ditt konto i Mattermost</label>
+      {{/* Picked rather than typed: app.js turns this into a list of the
+           people in the chat. Without JavaScript it stays a box that takes a
+           username, and the server looks it up the same way. */}}
+      <div class="searchfield">
+        <div class="member-input">
+          <span class="member-at" aria-hidden="true">@</span>
+          <input type="text" id="member" name="member" value="{{.Typed}}" required autofocus
+                 autocomplete="off" spellcheck="false" autocapitalize="none"
+                 placeholder="ditt namn eller användarnamn"
+                 role="combobox" aria-expanded="false" aria-autocomplete="list"
+                 aria-controls="member-list"
+                 data-member-search
+                 data-member-none="Ingen med det namnet i Mattermost."
+                 data-member-error="Kunde inte nå Mattermost. Skriv ditt användarnamn.">
+        </div>
+        <div id="member-list" class="results" role="listbox" hidden></div>
+      </div>
+      <p class="hint">
+        Skriv några bokstäver av ditt namn och välj i listan.
+        {{with .ChatURL}}Kontot finns i <a href="{{.}}" target="_blank" rel="noopener noreferrer">chatten</a>.{{end}}
+      </p>
+    </div>
+
+    <button class="btn btn-primary btn-block" type="submit">Det är jag</button>
+  </form>
+
+  <form method="post" action="/logout">
+    <button class="btn btn-ghost btn-block" type="submit">Avbryt och logga ut</button>
+  </form>
+</section>
+{{end}}

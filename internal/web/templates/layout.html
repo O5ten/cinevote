@@ -21,7 +21,14 @@
     {{if .VotesLeft}}<span class="pill pill-votes" title="Röster kvar att fördela">{{.VotesLeft}} / {{.MaxVotes}} röster kvar</span>
     {{else if .User}}<span class="pill pill-spent" title="Alla röster är utlagda">Alla röster utlagda</span>{{end}}
     {{if .User.IsAdmin}}<a class="pill pill-admin" href="/admin">Admin</a>{{end}}
-    <span class="pill pill-user">{{.User.Username}}</span>
+    <span class="pill pill-user" {{if .User.FromMattermost}}title="Mattermost: @{{.User.MMUsername}}"{{end}}>{{.User.Name}}</span>
+    {{if .UseMattermost}}
+    {{/* A shared screen hands over without needing the password again. */}}
+    <form method="post" action="/byt-anvandare">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button class="btn btn-ghost" type="submit" title="Byt till någon annan">Byt användare</button>
+    </form>
+    {{end}}
     <form method="post" action="/logout">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
       <button class="btn btn-ghost" type="submit">Logga ut</button>

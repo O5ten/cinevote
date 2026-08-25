@@ -3,6 +3,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,16 @@ import (
 	"strings"
 	"time"
 )
+
+// MattermostSettings points at the chat server whose accounts identify people.
+// Both fields or neither: half a configuration looks connected and is not.
+type MattermostSettings struct {
+	URL   string // e.g. "https://chat.example.se"
+	Token string // a bot or personal access token that may read the directory
+}
+
+// Enabled reports whether lookups will really reach a Mattermost server.
+func (m MattermostSettings) Enabled() bool { return m.URL != "" && m.Token != "" }
 
 type Config struct {
 	Addr             string        // listen address, e.g. ":8080"
@@ -24,6 +35,13 @@ type Config struct {
 	MaxVotes         int           // votes per user
 	SessionTTL       time.Duration // login lifetime
 	SecureCookies    bool          // set when served over HTTPS
+
+	// Mattermost identifies people instead of CineVote's own accounts. When
+	// it is configured, one shared password lets you in and you say who you
+	// are by picking your chat account — the same way the sibling sites work.
+	Mattermost MattermostSettings
+	// SharedPassword is the one password everybody uses in Mattermost mode.
+	SharedPassword string
 
 	// Demo mode: seed a populated database and show the logins in the UI.
 	// Nothing needs to be configured for it, so it is also the mode that must
@@ -44,8 +62,13 @@ func Load() (Config, error) {
 		AdminPassword:    os.Getenv("CINEVOTE_ADMIN_PASSWORD"),
 		RegistrationCode: os.Getenv("CINEVOTE_REGISTRATION_CODE"),
 		PosterSource:     strings.ToLower(strings.TrimSpace(os.Getenv("CINEVOTE_POSTER_SOURCE"))),
-		OMDbAPIKey:       strings.TrimSpace(os.Getenv("OMDB_API_KEY")),
-		TMDBAPIKey:       strings.TrimSpace(os.Getenv("TMDB_API_KEY")),
+		SharedPassword:   os.Getenv("CINEVOTE_PASSWORD"),
+		Mattermost: MattermostSettings{
+			URL:   strings.TrimRight(strings.TrimSpace(os.Getenv("MATTERMOST_URL")), "/"),
+			Token: strings.TrimSpace(os.Getenv("MATTERMOST_TOKEN")),
+		},
+		OMDbAPIKey: strings.TrimSpace(os.Getenv("OMDB_API_KEY")),
+		TMDBAPIKey: strings.TrimSpace(os.Getenv("TMDB_API_KEY")),
 	}
 
 	votes, err := envInt("CINEVOTE_MAX_VOTES", 5)
@@ -68,8 +91,22 @@ func Load() (Config, error) {
 
 	c.SecureCookies = envBool("CINEVOTE_SECURE_COOKIES", false)
 	c.Demo = envBool("CINEVOTE_DEMO", false)
+
+	// Half a Mattermost configuration is worse than none: it looks connected
+	// and silently is not, so say so at startup instead.
+	if (c.Mattermost.URL == "") != (c.Mattermost.Token == "") {
+		return c, errors.New("set both MATTERMOST_URL and MATTERMOST_TOKEN, or neither")
+	}
+	if c.Mattermost.Enabled() && c.SharedPassword == "" {
+		return c, errors.New("CINEVOTE_PASSWORD must be set when Mattermost identifies people: " +
+			"it is the one password everyone signs in with")
+	}
 	return c, nil
 }
+
+// UseMattermost reports whether people identify themselves with a chat account
+// instead of a CineVote account.
+func (c Config) UseMattermost() bool { return c.Mattermost.Enabled() }
 
 // DefaultDBPath is where the database lives when CINEVOTE_DB says nothing.
 const DefaultDBPath = "data/cinevote.db"
@@ -100,6 +137,9 @@ func (c *Config) ApplyDemoDefaults(adminPassword string) (replacedDB string) {
 	}
 	// An invite code would defeat the purpose of a click-and-try demo.
 	c.RegistrationCode = ""
+	// The demo runs on its own seeded accounts and must never touch a real
+	// chat server, the same rule the sibling sites keep.
+	c.Mattermost = MattermostSettings{}
 	return replacedDB
 }
 

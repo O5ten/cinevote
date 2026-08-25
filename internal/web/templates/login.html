@@ -1,19 +1,25 @@
 {{define "content"}}
 <section class="auth">
   <h1 class="auth-title">Logga in</h1>
-  <p class="auth-sub">Rösta fram nästa filmkväll.</p>
+  <p class="auth-sub">
+    {{if .UseMattermost}}Ett lösenord för alla — sen väljer du vem du är.{{else}}Rösta fram nästa filmkväll.{{end}}
+  </p>
 
   {{with .Error}}<p class="formerror" role="alert">{{.}}</p>{{end}}
 
   <form class="authform" method="post" action="/login">
+    {{if not .UseMattermost}}
     <div class="field field-wide">
       <label for="username">Användarnamn</label>
       <input type="text" id="username" name="username" value="{{.Name}}" required autofocus
              autocomplete="username" maxlength="32">
     </div>
+    {{end}}
     <div class="field field-wide">
       <label for="password">Lösenord</label>
-      <input type="password" id="password" name="password" required autocomplete="current-password">
+      <input type="password" id="password" name="password" required autocomplete="current-password"
+             {{if .UseMattermost}}autofocus{{end}}>
+      {{if .UseMattermost}}<p class="hint">Samma lösenord som resten av gänget. Admin har ett eget.</p>{{end}}
     </div>
     <button class="btn btn-primary btn-block" type="submit">Logga in</button>
   </form>
@@ -36,6 +42,8 @@
   </div>
   {{end}}
 
+  {{if not .UseMattermost}}
   <p class="auth-alt">Har du inget konto? <a href="/register">Skapa ett</a>.</p>
+  {{end}}
 </section>
 {{end}}

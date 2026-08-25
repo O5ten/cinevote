@@ -1,0 +1,31 @@
+# Build both images from this checkout, for developing on CineVote itself.
+# Everyday use wants docker-compose.yml, which pulls the published images.
+#
+#   docker compose -f docker-compose.build.yml up --build -d
+#   docker compose -f docker-compose.build.yml --profile demo up --build
+services:
+  cinevote:
+    extends:
+      file: docker-compose.yml
+      service: cinevote
+    image: ghcr.io/o5ten/cinevote:dev
+    build:
+      context: .
+      target: production
+      args:
+        VERSION: ${VERSION:-dev}
+
+  demo:
+    profiles: ["demo"]
+    extends:
+      file: docker-compose.yml
+      service: demo
+    image: ghcr.io/o5ten/cinevote-demo:dev
+    build:
+      context: .
+      target: demo
+      args:
+        VERSION: ${VERSION:-dev}
+
+volumes:
+  cinevote-data:

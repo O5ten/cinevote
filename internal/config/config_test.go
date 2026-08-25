@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -92,5 +95,76 @@ func TestApplyDemoDefaultsAlwaysUsesTheThrowawayDatabase(t *testing.T) {
 	// A password someone chose is still theirs.
 	if cfg.AdminPassword != "chosen-by-a-human" {
 		t.Errorf("admin password = %q, want the configured one", cfg.AdminPassword)
+	}
+}
+
+func TestLoadEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	body := strings.Join([]string{
+		"# a comment",
+		"",
+		"CINEVOTE_SITE_NAME=Filmklubben",
+		"export CINEVOTE_MAX_VOTES=7",
+		`OMDB_API_KEY="quoted-key"`,
+		"CINEVOTE_PASSWORD='single quoted'",
+		"CINEVOTE_ADMIN_USERNAME=chefen # trailing comment",
+		"CINEVOTE_REGISTRATION_CODE=  spaced  ",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Something already set must survive the file.
+	t.Setenv("CINEVOTE_SITE_NAME", "Redan Satt")
+	for _, key := range []string{
+		"CINEVOTE_MAX_VOTES", "OMDB_API_KEY", "CINEVOTE_PASSWORD",
+		"CINEVOTE_ADMIN_USERNAME", "CINEVOTE_REGISTRATION_CODE",
+	} {
+		t.Setenv(key, "")
+		os.Unsetenv(key)
+	}
+
+	if err := LoadEnvFile(path); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	cases := map[string]string{
+		"CINEVOTE_SITE_NAME":         "Redan Satt", // the environment wins
+		"CINEVOTE_MAX_VOTES":         "7",
+		"OMDB_API_KEY":               "quoted-key",
+		"CINEVOTE_PASSWORD":          "single quoted",
+		"CINEVOTE_ADMIN_USERNAME":    "chefen",
+		"CINEVOTE_REGISTRATION_CODE": "spaced",
+	}
+	for key, want := range cases {
+		if got := os.Getenv(key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxVotes != 7 || cfg.SiteName != "Redan Satt" {
+		t.Errorf("config did not pick the file up: %+v", cfg)
+	}
+}
+
+// A missing file is the normal case for a plain `docker run -e ...`.
+func TestLoadEnvFileMissingIsFine(t *testing.T) {
+	if err := LoadEnvFile(filepath.Join(t.TempDir(), "nothing-here")); err != nil {
+		t.Errorf("a missing env file should be ignored, got %v", err)
+	}
+}
+
+func TestLoadEnvFileRejectsGibberish(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte("this is not a setting\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadEnvFile(path); err == nil {
+		t.Error("a malformed line should be reported, not skipped silently")
 	}
 }

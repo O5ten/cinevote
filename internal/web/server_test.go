@@ -17,6 +17,7 @@ import (
 	"github.com/o5ten/cinevote/internal/auth"
 	"github.com/o5ten/cinevote/internal/config"
 	"github.com/o5ten/cinevote/internal/demo"
+	"github.com/o5ten/cinevote/internal/mattermost"
 	"github.com/o5ten/cinevote/internal/poster"
 	"github.com/o5ten/cinevote/internal/store"
 )
@@ -31,6 +32,11 @@ type app struct {
 }
 
 func newApp(t *testing.T, tweak func(*config.Config)) *app {
+	return newAppWithChat(t, tweak, nil)
+}
+
+// newAppWithChat is newApp plus a Mattermost client, for the identity mode.
+func newAppWithChat(t *testing.T, tweak func(*config.Config), chat *mattermost.Client) *app {
 	t.Helper()
 
 	cfg := config.Config{
@@ -55,7 +61,7 @@ func newApp(t *testing.T, tweak func(*config.Config)) *app {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := New(cfg, st, posters, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv, err := New(cfg, st, posters, chat, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}

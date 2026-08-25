@@ -82,12 +82,24 @@ jobs:
           path: dist/
 
   image:
-    name: Docker image
+    name: Docker image (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: test
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Two images from the same Dockerfile: one that keeps its data, one
+          # that seeds itself and throws it away.
+          - name: production
+            target: production
+            image: cinevote
+          - name: demo
+            target: demo
+            image: cinevote-demo
     steps:
       - uses: actions/checkout@v4
 
@@ -107,7 +119,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
           # latest=false turns off metadata-action's implicit "latest on semver
           # tags" behaviour, so the only thing that moves :latest is the
           # explicit rule below: a push to the default branch.
@@ -125,29 +137,44 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: ${{ matrix.target }}
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ github.ref_name }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
 
-      # Runs the zero-configuration path: no env file, no API key, no volume.
-      - name: Smoke test the image in demo mode
+      # Each image is started the way a user would start it: the demo with no
+      # configuration at all, production with only a password.
+      - name: Smoke test the image
         run: |
-          docker build -t cinevote:smoke .
-          docker run -d --name cinevote-smoke -p 8080:8080 cinevote:smoke -demo
+          docker build --target ${{ matrix.target }} -t cinevote:smoke .
+          if [ "${{ matrix.target }}" = "demo" ]; then
+            docker run -d --name cinevote-smoke -p 8080:8080 cinevote:smoke
+          else
+            docker run -d --name cinevote-smoke -p 8080:8080 \
+              -e CINEVOTE_ADMIN_PASSWORD=smoke-test-admin cinevote:smoke
+          fi
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:8080/healthz | grep -q ok; then
               echo "healthy after ${i}s"
               curl -fsS -o /dev/null -w 'login page: %{http_code}\n' http://localhost:8080/login
-              # The demo must arrive seeded and advertise its own logins.
-              curl -fsS http://localhost:8080/login | grep -q 'Demokonton' \
-                || { echo "demo logins missing from the login page"; exit 1; }
-              docker logs cinevote-smoke | grep -q 'demo data created' \
-                || { echo "demo data was not seeded"; exit 1; }
+              if [ "${{ matrix.target }}" = "demo" ]; then
+                # The demo must arrive seeded and advertise its own logins.
+                curl -fsS http://localhost:8080/login | grep -q 'Demokonton' \
+                  || { echo "demo logins missing from the login page"; exit 1; }
+                docker logs cinevote-smoke | grep -q 'demo data created' \
+                  || { echo "demo data was not seeded"; exit 1; }
+              else
+                # Production must not seed anything or advertise demo logins.
+                curl -fsS http://localhost:8080/login | grep -q 'Demokonton' \
+                  && { echo "the production image is running in demo mode"; exit 1; }
+                docker logs cinevote-smoke | grep -q 'demo data' \
+                  && { echo "the production image seeded demo data"; exit 1; }
+              fi
               docker logs cinevote-smoke
               docker rm -f cinevote-smoke
               exit 0

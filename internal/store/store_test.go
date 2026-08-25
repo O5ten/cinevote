@@ -303,14 +303,14 @@ func TestSessions(t *testing.T) {
 	u := mustUser(t, st, "Ada")
 
 	expired := timeIn(-1)
-	if err := st.CreateSession(ctx, u.ID, "stale", "csrf", expired); err != nil {
+	if err := st.CreateSession(ctx, u.ID, "stale", "csrf", "", expired); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := st.Session(ctx, "stale"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expired session should not resolve, got %v", err)
 	}
 
-	if err := st.CreateSession(ctx, u.ID, "fresh", "csrf-token", timeIn(1)); err != nil {
+	if err := st.CreateSession(ctx, u.ID, "fresh", "csrf-token", "", timeIn(1)); err != nil {
 		t.Fatal(err)
 	}
 	got, csrf, err := st.Session(ctx, "fresh")
@@ -429,4 +429,117 @@ INSERT INTO movies (title, title_ci, year, created_at) VALUES ('Alien', 'alien',
 		t.Fatalf("second open: %v", err)
 	}
 	again.Close()
+}
+
+// A Mattermost identity becomes one CineVote account, reused on every sign-in
+// and kept in step with the chat's display name.
+func TestUpsertMattermostUser(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	first, err := st.UpsertMattermostUser(ctx, "anna.andersson", "u1", "Anna Andersson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.FromMattermost() || first.Name() != "Anna Andersson" {
+		t.Fatalf("account = %+v", first)
+	}
+	if first.PasswordHash != "" {
+		t.Error("a chat account should not carry a password")
+	}
+
+	// Signing in again is the same account, with the name refreshed.
+	again, err := st.UpsertMattermostUser(ctx, "Anna.Andersson", "u1", "Anna Ö. Andersson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != first.ID {
+		t.Fatalf("second sign-in made a new account: %d then %d", first.ID, again.ID)
+	}
+	if again.Name() != "Anna Ö. Andersson" {
+		t.Errorf("display name = %q, want the one from the chat", again.Name())
+	}
+
+	users, err := st.UserStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("got %d accounts, want 1", len(users))
+	}
+
+	// Password accounts are untouched by any of this.
+	if _, err := st.CreateUser(ctx, "Bo", "hash", false); err != nil {
+		t.Fatal(err)
+	}
+	bo, err := st.UserByUsername(ctx, "Bo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bo.FromMattermost() || bo.Name() != "Bo" {
+		t.Errorf("password account = %+v", bo)
+	}
+}
+
+// The pages show the chat's name for a chat-identified member.
+func TestDisplayNamesReachTheBoard(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	anna, err := st.UpsertMattermostUser(ctx, "anna.andersson", "u1", "Anna Andersson")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := mustMovie(t, st, "Stalker", anna.ID)
+	if err := st.Vote(ctx, anna.ID, id); err != nil {
+		t.Fatal(err)
+	}
+
+	movies, err := st.Movies(ctx, anna.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if movies[0].SuggestedBy != "Anna Andersson" {
+		t.Errorf("suggested by %q, want the display name", movies[0].SuggestedBy)
+	}
+	if len(movies[0].Voters) != 1 || movies[0].Voters[0] != "Anna Andersson" {
+		t.Errorf("voters = %v, want the display name", movies[0].Voters)
+	}
+}
+
+// The session carries the role in Mattermost mode, where accounts have none.
+func TestSessionRoleGrantsAdmin(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	u := mustUser(t, st, "Ada")
+
+	if err := st.CreateSession(ctx, u.ID, "plain", "csrf", "", timeIn(1)); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := st.Session(ctx, "plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.IsAdmin {
+		t.Error("a session with no role should not be admin")
+	}
+
+	if err := st.CreateSession(ctx, u.ID, "boss", "csrf", RoleAdmin, timeIn(1)); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err = st.Session(ctx, "boss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.IsAdmin {
+		t.Error("an admin session should grant admin rights")
+	}
+	// The account itself is unchanged: the role lives on the session.
+	stored, err := st.UserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.IsAdmin {
+		t.Error("the account should not have been promoted")
+	}
 }

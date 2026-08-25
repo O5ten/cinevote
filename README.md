@@ -28,7 +28,7 @@ Or straight from the published image, nothing to clone (available once CI has
 built a push to `main`, and the package has been made public in GHCR):
 
 ```bash
-docker run --rm -p 8080:8080 ghcr.io/o5ten/cinevote:latest -demo
+docker run --rm -p 8080:8080 ghcr.io/o5ten/cinevote-demo:latest
 ```
 
 Open <http://localhost:8080> and click one of the demo accounts on the login
@@ -50,11 +50,35 @@ movie night: everyone shares one obvious password.
 
 ### With Docker Compose
 
+There are two images, both built from the same Dockerfile:
+
+| Image | What it is |
+| --- | --- |
+| `ghcr.io/o5ten/cinevote` | The real thing. Keeps its database on a volume. |
+| `ghcr.io/o5ten/cinevote-demo` | Seeds itself on every start and throws it away. Runs with no configuration. |
+
+`docker-compose.yml` **pulls** them rather than building:
+
 ```bash
 git clone https://github.com/o5ten/cinevote.git && cd cinevote
-cp .env.example .env      # fill in OMDB_API_KEY
-docker compose up --build -d
-docker compose logs -f    # the admin password is in here if you didn't set one
+cp .env.example .env         # fill in OMDB_API_KEY and a password
+docker compose pull
+docker compose up -d
+docker compose logs -f       # the admin password is in here if you didn't set one
+```
+
+The demo is a separate service on its own profile, and needs nothing at all:
+
+```bash
+docker compose --profile demo up
+```
+
+Both services read `.env` if it is there (`required: false`, so its absence is
+fine). To build from a checkout instead of pulling, use the build file:
+
+```bash
+docker compose -f docker-compose.build.yml up --build -d
+docker compose -f docker-compose.build.yml --profile demo up --build
 ```
 
 ### Locally
@@ -68,6 +92,52 @@ make run                  # or: go run ./cmd/cinevote
 
 The database is a single SQLite file (`data/cinevote.db` locally,
 `/data/cinevote.db` in the container). Back it up by copying the file.
+
+### Signing in with Mattermost
+
+CineVote can borrow a Mattermost server's user directory instead of keeping
+accounts of its own — the same integration the sibling sites (`dinner`,
+`booking`) use. Point it at the chat and everyone signs in with **one shared
+password**, then picks themselves out of the directory:
+
+```bash
+MATTERMOST_URL=https://chat.example.se
+MATTERMOST_TOKEN=...        # a bot or personal access token
+CINEVOTE_PASSWORD=...       # the one password everybody uses
+CINEVOTE_ADMIN_PASSWORD=... # a second password that also grants admin
+```
+
+Set both `MATTERMOST_URL` and `MATTERMOST_TOKEN` or neither — half a
+configuration looks connected and is not, so it fails at startup instead. The
+token is verified at startup too, so a bad one is loud rather than a mystery at
+the login page.
+
+How it behaves:
+
+* The login page asks for a password and nothing else. Sign-up is gone, because
+  there is nothing to sign up for.
+* After the password you land on **Vem är du?** and pick your chat account. Type
+  a few letters of your name and choose from the list — accents fold, so
+  "ostberg" finds "Östberg". A pasted `@handle` works, and so does a full name.
+* Votes and suggestions hang on that chat account, so next time the password is
+  all you need. Names on the board come from the chat, and stay in step with it.
+* Ambiguity is never guessed. Typing "Anna" with two Annas in the chat names
+  both and asks for one more letter.
+* **Byt användare** in the header hands a shared screen to the next person
+  without the password being typed again.
+* Which password you used decides your role: the admin password grants admin to
+  whoever signs in with it, since there are no accounts to carry the flag.
+* The token only ever reads the directory. CineVote never posts anything.
+
+The picker fetches the whole directory once and filters it in the browser. If
+the directory is too large to send, or the token may search but not list, it
+falls back to searching on the server — so a token with minimal rights still
+works. The directory is only readable once the shared password has been
+accepted.
+
+Without Mattermost configured, nothing changes: CineVote keeps its own accounts
+with a username and password each. Demo mode always uses its own accounts and
+never contacts a chat server.
 
 ### First login
 
@@ -178,7 +248,12 @@ same filters and the row you were on.
 
 ## Configuration
 
-Everything is environment variables. The only flags are `-demo` and `-version`.
+Everything is environment variables. The flags are `-demo`, `-version` and
+`-env` (which file of `KEY=value` settings to read).
+
+A `.env` file next to the binary is read at startup if it exists, so the same
+settings work for `go run`, for `docker run -v ./.env:/data/.env:ro`, and for
+compose. Anything already set in the real environment wins over the file.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -192,6 +267,9 @@ Everything is environment variables. The only flags are `-demo` and `-version`.
 | `CINEVOTE_SESSION_DAYS` | `30` | How long a login lasts |
 | `CINEVOTE_SECURE_COOKIES` | `false` | Set `true` behind HTTPS |
 | `CINEVOTE_DEMO` | `false` | Demo mode, same as `-demo` |
+| `MATTERMOST_URL` | *(empty)* | Chat server whose accounts identify people |
+| `MATTERMOST_TOKEN` | *(empty)* | Token that may read the directory |
+| `CINEVOTE_PASSWORD` | *(empty)* | The shared password, required with Mattermost |
 | `OMDB_API_KEY` | *(empty)* | Enables IMDb lookups |
 | `CINEVOTE_POSTER_SOURCE` | *(auto)* | `imdb`, `tmdb` or `none` |
 | `TMDB_API_KEY` | *(empty)* | Enables "similar films" from outside the list |
@@ -222,9 +300,11 @@ make docker      # build the container image
 Tests cover the voting rules at the database level (`internal/store`), the OMDb
 client against a fake API server including rating-ranked search and caching
 (`internal/poster`), filtering, sorting and similarity scoring
-(`internal/browse`), the demo seed data (`internal/demo`), and the whole HTTP
-flow — login, CSRF, voting, admin, filters, the similar page and the demo logins
-(`internal/web`). No test touches the network.
+(`internal/browse`), the demo seed data (`internal/demo`), the chat directory
+client against a fake Mattermost (`internal/mattermost`), and the whole HTTP
+flow — both sign-in modes, CSRF, voting, admin, filters, the similar page, the
+identity picker and the demo logins (`internal/web`). No test touches the
+network.
 
 ### Layout
 
@@ -235,6 +315,7 @@ internal/auth       password hashing, tokens, validation
 internal/store      SQLite: users, sessions, movies, votes
 internal/browse     filtering, sorting and similarity scoring
 internal/demo       seed data for demo mode (accounts, films, votes)
+internal/mattermost read-only chat directory client (+ mmtest, a fake server)
 internal/poster     OMDb/TMDB lookups behind one interface
 internal/web        routing, sessions, HTML templates, CSS/JS (embedded)
 ```
@@ -262,8 +343,11 @@ styles or scripts in the templates, and no external fonts.
 
 1. **test** — `gofmt` check, `go mod tidy` check, `go vet`, `go test -race` with coverage.
 2. **build** — cross-compiles binaries for linux/amd64, linux/arm64 and darwin/arm64.
-3. **image** — builds for amd64 + arm64, pushes to `ghcr.io/o5ten/cinevote`
-   (not on pull requests) and smoke-tests demo mode in a running container.
+3. **image** — builds both images for amd64 + arm64, pushes them to
+   `ghcr.io/o5ten/cinevote` and `ghcr.io/o5ten/cinevote-demo` (not on pull
+   requests), and starts each one the way a user would: the demo with no
+   configuration, production with only a password. The demo has to arrive
+   seeded; production must not seed anything.
 
 Image tags:
 
@@ -278,9 +362,9 @@ So `:latest` always follows `main`, never a version tag. To make releases move
 `enable={{is_default_branch}} || startsWith(github.ref, 'refs/tags/v')` in
 `.github/workflows/ci.yml`.
 
-The first push to `main` creates the GHCR package. It is private by default —
-make it public under **Packages → cinevote → Package settings** if anyone should
-be able to `docker pull` it.
+The first push to `main` creates both GHCR packages. They are private by
+default — make them public under **Packages → … → Package settings** if anyone
+should be able to `docker pull` them.
 
 ## License
 

@@ -1,27 +1,43 @@
+# CineVote, from the published images. Nothing is built here: pull and run.
+#
+#   docker compose pull && docker compose up -d          # the real thing
+#   docker compose --profile demo up -d                  # the seeded demo
+#
+# To build from a checkout instead, use docker-compose.build.yml:
+#   docker compose -f docker-compose.build.yml up --build
 services:
   cinevote:
-    build:
-      context: .
-      args:
-        VERSION: ${VERSION:-dev}
-    image: ghcr.io/o5ten/cinevote:latest
+    image: ${CINEVOTE_IMAGE:-ghcr.io/o5ten/cinevote:latest}
     container_name: cinevote
     restart: unless-stopped
     ports:
       - "${CINEVOTE_PORT:-8080}:8080"
+    # Read .env if it is there. Everything below can also come from that file;
+    # what is set here wins over what the file says.
+    env_file:
+      - path: .env
+        required: false
     environment:
       # Movie data. OMDB_API_KEY enables poster/rating lookups; without it the
       # app still works with hand-pasted poster links.
       OMDB_API_KEY: ${OMDB_API_KEY:-}
       CINEVOTE_POSTER_SOURCE: ${CINEVOTE_POSTER_SOURCE:-}
+      # A TMDB key adds "films like this one" from outside the list.
       TMDB_API_KEY: ${TMDB_API_KEY:-}
 
-      # The single admin account. Leave the password unset on a fresh volume
-      # and one is generated and printed once in the container logs.
+      # Identity. With a Mattermost server configured, one shared password gets
+      # everyone in and they pick themselves from the chat directory; without
+      # it, CineVote keeps its own accounts.
+      MATTERMOST_URL: ${MATTERMOST_URL:-}
+      MATTERMOST_TOKEN: ${MATTERMOST_TOKEN:-}
+      CINEVOTE_PASSWORD: ${CINEVOTE_PASSWORD:-}
+
+      # The admin. Leave the password unset on a fresh volume and one is
+      # generated and printed once in the container logs.
       CINEVOTE_ADMIN_USERNAME: ${CINEVOTE_ADMIN_USERNAME:-admin}
       CINEVOTE_ADMIN_PASSWORD: ${CINEVOTE_ADMIN_PASSWORD:-}
 
-      # Optional shared invite code for sign-up.
+      # Optional shared invite code for sign-up (account mode only).
       CINEVOTE_REGISTRATION_CODE: ${CINEVOTE_REGISTRATION_CODE:-}
 
       CINEVOTE_SITE_NAME: ${CINEVOTE_SITE_NAME:-CineVote}
@@ -30,21 +46,21 @@ services:
     volumes:
       - cinevote-data:/data
 
-  # Zero-configuration demo: no .env, no API key, no volume. Everything is
-  # seeded on start and thrown away on stop.
-  #   docker compose --profile demo up
+  # The demo is its own image: the seed data is baked in and it starts with
+  # -demo, so there is nothing to configure and no volume to keep.
   demo:
     profiles: ["demo"]
-    build:
-      context: .
-    image: ghcr.io/o5ten/cinevote:latest
+    image: ${CINEVOTE_DEMO_IMAGE:-ghcr.io/o5ten/cinevote-demo:latest}
     container_name: cinevote-demo
-    command: ["-demo"]
+    restart: unless-stopped
     ports:
       - "${CINEVOTE_DEMO_PORT:-8080}:8080"
+    env_file:
+      - path: .env
+        required: false
     environment:
-      # A key is optional even here — the demo ships with its own poster data.
-      # Get a free one at https://www.omdbapi.com/apikey.aspx to search live.
+      # Optional even here — the demo ships with its own poster data.
+      # Get a free key at https://www.omdbapi.com/apikey.aspx to search live.
       OMDB_API_KEY: ${OMDB_API_KEY:-}
 
 volumes:

@@ -752,6 +752,38 @@ input[type="search"]:focus, select:focus {
 .section-seen .card:hover { opacity: 1; }
 .grid-seen { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
 
+/* -------------------------------------------------------- who am I picker --- */
+
+.auth-wide { max-width: 520px; }
+
+.member-input { display: flex; align-items: stretch; }
+.member-at {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  flex: 0 0 38px;
+  border: 1px solid var(--line-2);
+  border-right: none;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  background: rgba(6, 4, 15, 0.75);
+  color: var(--muted);
+  font-weight: 700;
+}
+.member-input input { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+.searchfield.open .member-input input { border-bottom-right-radius: 0; }
+.member-option { padding: 9px 10px; }
+
+.rolenote {
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 110, 199, 0.5);
+  background: rgba(255, 110, 199, 0.1);
+  color: #ffd7f2;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
 /* ----------------------------------------------------------------- auth --- */
 
 .auth {

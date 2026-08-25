@@ -71,16 +71,27 @@ CREATE TABLE IF NOT EXISTS users (
 	username_ci   TEXT    NOT NULL UNIQUE,
 	password_hash TEXT    NOT NULL,
 	is_admin      INTEGER NOT NULL DEFAULT 0,
-	created_at    INTEGER NOT NULL
+	created_at    INTEGER NOT NULL,
+	-- Set when the account is identified by a Mattermost user rather than by a
+	-- password of its own. display_name is what the pages show.
+	mm_username   TEXT    NOT NULL DEFAULT '',
+	mm_user_id    TEXT    NOT NULL DEFAULT '',
+	display_name  TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
 	token      TEXT    PRIMARY KEY,
 	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	csrf       TEXT    NOT NULL,
-	expires_at INTEGER NOT NULL
+	expires_at INTEGER NOT NULL,
+	-- In Mattermost mode the password decides the role, not the account, so
+	-- the session carries it: "admin" or "" for an ordinary member.
+	role       TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+-- One CineVote account per chat account. Partial, so password accounts (which
+-- have no chat account) do not collide on the empty string.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_mm ON users(mm_username) WHERE mm_username <> '';
 
 CREATE TABLE IF NOT EXISTS movies (
 	id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,6 +127,24 @@ CREATE INDEX IF NOT EXISTS idx_votes_movie ON votes(movie_id);
 	}
 	// CREATE TABLE IF NOT EXISTS leaves an older table alone, so columns added
 	// in later versions have to be filled in separately.
+	if err := s.ensureColumns("users", []column{
+		{"mm_username", "TEXT NOT NULL DEFAULT ''"},
+		{"mm_user_id", "TEXT NOT NULL DEFAULT ''"},
+		{"display_name", "TEXT NOT NULL DEFAULT ''"},
+	}); err != nil {
+		return err
+	}
+	if err := s.ensureColumns("sessions", []column{
+		{"role", "TEXT NOT NULL DEFAULT ''"},
+	}); err != nil {
+		return err
+	}
+	// The index needs the column, so it cannot live in the schema above for a
+	// database that predates it.
+	if _, err := s.db.Exec(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_mm ON users(mm_username) WHERE mm_username <> ''`); err != nil {
+		return fmt.Errorf("create mattermost index: %w", err)
+	}
 	return s.ensureColumns("movies", []column{
 		{"imdb_id", "TEXT NOT NULL DEFAULT ''"},
 		{"rating", "TEXT NOT NULL DEFAULT ''"},
@@ -172,7 +201,25 @@ type User struct {
 	PasswordHash string
 	IsAdmin      bool
 	CreatedAt    time.Time
+
+	// Set for accounts identified through Mattermost.
+	MMUsername  string
+	MMUserID    string
+	DisplayName string
 }
+
+// Name is what the pages show: the display name when there is one, otherwise
+// the username.
+func (u User) Name() string {
+	if u.DisplayName != "" {
+		return u.DisplayName
+	}
+	return u.Username
+}
+
+// FromMattermost reports whether the account is identified by a chat account
+// rather than a password of its own.
+func (u User) FromMattermost() bool { return u.MMUsername != "" }
 
 func (s *Store) CreateUser(ctx context.Context, username, passwordHash string, isAdmin bool) (*User, error) {
 	now := time.Now()
@@ -190,21 +237,31 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash string, i
 	return &User{ID: id, Username: username, PasswordHash: passwordHash, IsAdmin: isAdmin, CreatedAt: now}, nil
 }
 
+const userColumns = `id, username, password_hash, is_admin, created_at,
+	mm_username, mm_user_id, display_name`
+
 func (s *Store) UserByUsername(ctx context.Context, username string) (*User, error) {
 	return s.scanUser(s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, is_admin, created_at FROM users WHERE username_ci = ?`, ci(username)))
+		`SELECT `+userColumns+` FROM users WHERE username_ci = ?`, ci(username)))
 }
 
 func (s *Store) UserByID(ctx context.Context, id int64) (*User, error) {
 	return s.scanUser(s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, is_admin, created_at FROM users WHERE id = ?`, id))
+		`SELECT `+userColumns+` FROM users WHERE id = ?`, id))
+}
+
+// UserByMattermost finds the account belonging to a chat username.
+func (s *Store) UserByMattermost(ctx context.Context, mmUsername string) (*User, error) {
+	return s.scanUser(s.db.QueryRowContext(ctx,
+		`SELECT `+userColumns+` FROM users WHERE mm_username = ?`, ci(mmUsername)))
 }
 
 func (s *Store) scanUser(row *sql.Row) (*User, error) {
 	var u User
 	var admin int
 	var created int64
-	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &admin, &created); err != nil {
+	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &admin, &created,
+		&u.MMUsername, &u.MMUserID, &u.DisplayName); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -213,6 +270,39 @@ func (s *Store) scanUser(row *sql.Row) (*User, error) {
 	u.IsAdmin = admin != 0
 	u.CreatedAt = time.Unix(created, 0)
 	return &u, nil
+}
+
+// UpsertMattermostUser finds or creates the CineVote account for a chat
+// account, keeping the shown name in step with the chat. The account has no
+// password: the shared one already got them in, and the chat account is what
+// says who they are.
+func (s *Store) UpsertMattermostUser(ctx context.Context, mmUsername, mmUserID, displayName string) (*User, error) {
+	mmUsername = ci(mmUsername)
+	if mmUsername == "" {
+		return nil, fmt.Errorf("no mattermost username")
+	}
+	if displayName == "" {
+		displayName = mmUsername
+	}
+
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO users (username, username_ci, password_hash, is_admin, created_at,
+                   mm_username, mm_user_id, display_name)
+VALUES (?, ?, '', 0, ?, ?, ?, ?)
+-- The unique index on mm_username is partial, so the conflict target has to
+-- repeat its predicate for SQLite to match them up.
+ON CONFLICT(mm_username) WHERE mm_username <> '' DO UPDATE SET
+	mm_user_id   = excluded.mm_user_id,
+	display_name = excluded.display_name`,
+		mmUsername, mmUsername, time.Now().Unix(), mmUsername, mmUserID, displayName); err != nil {
+		if isUniqueViolation(err) {
+			// A password account already holds that username. Nothing sensible
+			// to merge, so say so rather than hijack it.
+			return nil, ErrDuplicateUser
+		}
+		return nil, fmt.Errorf("upsert mattermost user: %w", err)
+	}
+	return s.UserByMattermost(ctx, mmUsername)
 }
 
 // UpsertAdmin creates or updates the single admin account and demotes anyone
@@ -241,6 +331,9 @@ func (s *Store) UpsertAdmin(ctx context.Context, username, passwordHash string) 
 	return s.UserByUsername(ctx, username)
 }
 
+// RoleAdmin is the session role that grants admin rights in Mattermost mode.
+const RoleAdmin = "admin"
+
 // UserStat is a row for the admin user list.
 type UserStat struct {
 	User
@@ -250,7 +343,7 @@ type UserStat struct {
 
 func (s *Store) UserStats(ctx context.Context) ([]UserStat, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT u.id, u.username, u.is_admin, u.created_at,
+SELECT u.id, u.username, u.is_admin, u.created_at, u.mm_username, u.display_name,
        (SELECT COUNT(*) FROM votes v JOIN movies m ON m.id = v.movie_id
          WHERE v.user_id = u.id AND m.seen = 0) AS votes_used,
        (SELECT COUNT(*) FROM movies m2 WHERE m2.suggested_by = u.id)  AS suggested
@@ -266,7 +359,8 @@ SELECT u.id, u.username, u.is_admin, u.created_at,
 		var st UserStat
 		var admin int
 		var created int64
-		if err := rows.Scan(&st.ID, &st.Username, &admin, &created, &st.VotesUsed, &st.Movies); err != nil {
+		if err := rows.Scan(&st.ID, &st.Username, &admin, &created,
+			&st.MMUsername, &st.DisplayName, &st.VotesUsed, &st.Movies); err != nil {
 			return nil, fmt.Errorf("scan user stat: %w", err)
 		}
 		st.IsAdmin = admin != 0
@@ -297,34 +391,41 @@ func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 
 /* ------------------------------------------------------------- sessions --- */
 
-func (s *Store) CreateSession(ctx context.Context, userID int64, token, csrf string, expires time.Time) error {
+// CreateSession opens a session. role is "admin" when the admin password was
+// used in Mattermost mode, and empty otherwise — an account's own is_admin
+// flag still applies on top of it.
+func (s *Store) CreateSession(ctx context.Context, userID int64, token, csrf, role string, expires time.Time) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (token, user_id, csrf, expires_at) VALUES (?, ?, ?, ?)`,
-		token, userID, csrf, expires.Unix())
+		`INSERT INTO sessions (token, user_id, csrf, expires_at, role) VALUES (?, ?, ?, ?, ?)`,
+		token, userID, csrf, expires.Unix(), role)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
 	return nil
 }
 
-// Session resolves a cookie token to its user, ignoring expired rows.
+// Session resolves a cookie token to its user, ignoring expired rows. The
+// returned user carries the session's role folded into IsAdmin, so callers do
+// not have to remember which mode they are in.
 func (s *Store) Session(ctx context.Context, token string) (*User, string, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT u.id, u.username, u.password_hash, u.is_admin, u.created_at, s.csrf
+SELECT u.id, u.username, u.password_hash, u.is_admin, u.created_at,
+       u.mm_username, u.mm_user_id, u.display_name, s.csrf, s.role
   FROM sessions s JOIN users u ON u.id = s.user_id
  WHERE s.token = ? AND s.expires_at > ?`, token, time.Now().Unix())
 
 	var u User
 	var admin int
 	var created int64
-	var csrf string
-	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &admin, &created, &csrf); err != nil {
+	var csrf, role string
+	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &admin, &created,
+		&u.MMUsername, &u.MMUserID, &u.DisplayName, &csrf, &role); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, "", ErrNotFound
 		}
 		return nil, "", fmt.Errorf("scan session: %w", err)
 	}
-	u.IsAdmin = admin != 0
+	u.IsAdmin = admin != 0 || role == RoleAdmin
 	u.CreatedAt = time.Unix(created, 0)
 	return &u, csrf, nil
 }
@@ -418,11 +519,11 @@ func (s *Store) Movies(ctx context.Context, viewerID int64) ([]Movie, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT m.id, m.title, m.year, m.poster_url, m.overview,
        m.imdb_id, COALESCE(m.tmdb_id, 0), m.rating, m.runtime, m.genres,
-       m.director, m.actors, COALESCE(u.username, ''),
+       m.director, m.actors, COALESCE(NULLIF(u.display_name, ''), u.username, ''),
        m.seen, COALESCE(m.seen_at, 0), m.created_at,
        (SELECT COUNT(*) FROM votes v WHERE v.movie_id = m.id) AS votes,
        EXISTS(SELECT 1 FROM votes v2 WHERE v2.movie_id = m.id AND v2.user_id = ?) AS voted_by_me,
-       COALESCE((SELECT GROUP_CONCAT(vu.username, ', ')
+       COALESCE((SELECT GROUP_CONCAT(COALESCE(NULLIF(vu.display_name, ''), vu.username), ', ')
                    FROM votes v3 JOIN users vu ON vu.id = v3.user_id
                   WHERE v3.movie_id = m.id), '') AS voters
   FROM movies m
@@ -472,7 +573,7 @@ func (s *Store) MovieByID(ctx context.Context, id int64) (*Movie, error) {
 SELECT m.id, m.title, m.year, m.poster_url, m.overview,
        m.imdb_id, COALESCE(m.tmdb_id, 0), m.rating, m.runtime, m.genres,
        m.director, m.actors,
-       COALESCE(u.username, ''), m.seen, COALESCE(m.seen_at, 0), m.created_at,
+       COALESCE(NULLIF(u.display_name, ''), u.username, ''), m.seen, COALESCE(m.seen_at, 0), m.created_at,
        (SELECT COUNT(*) FROM votes v WHERE v.movie_id = m.id)
   FROM movies m LEFT JOIN users u ON u.id = m.suggested_by
  WHERE m.id = ?`, id).

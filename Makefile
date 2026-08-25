@@ -1,7 +1,8 @@
-BINARY := cinevote
-IMAGE  := ghcr.io/o5ten/cinevote
+BINARY     := cinevote
+IMAGE      := ghcr.io/o5ten/cinevote
+DEMO_IMAGE := ghcr.io/o5ten/cinevote-demo
 
-.PHONY: run demo build test fmt vet lint docker docker-run docker-demo compose compose-demo clean
+.PHONY: run demo build test fmt vet lint docker docker-run docker-demo compose compose-demo compose-build clean
 
 ## run: start the server locally on :8080 (reads .env if present)
 run:
@@ -30,25 +31,30 @@ lint: vet
 	@unformatted=$$(gofmt -l .); \
 	if [ -n "$$unformatted" ]; then echo "needs gofmt:"; echo "$$unformatted"; exit 1; fi
 
-## docker: build the container image
+## docker: build both images — production and demo
 docker:
-	docker build -t $(IMAGE):dev .
+	docker build --target production -t $(IMAGE):dev .
+	docker build --target demo -t $(DEMO_IMAGE):dev .
 
-## docker-run: run the image with a local volume for the database
+## docker-run: run the production image with a local volume for the database
 docker-run: docker
 	docker run --rm -p 8080:8080 --env-file .env -v cinevote-data:/data $(IMAGE):dev
 
-## docker-demo: run the demo in a container, no env file, no volume
+## docker-demo: run the demo image — no configuration, no volume
 docker-demo: docker
-	docker run --rm -p 8080:8080 $(IMAGE):dev -demo
+	docker run --rm -p 8080:8080 $(DEMO_IMAGE):dev
 
-## compose: bring the stack up in the background
+## compose: run the published production image
 compose:
-	docker compose up --build -d
+	docker compose up -d
 
-## compose-demo: the same demo via compose
+## compose-demo: run the published demo image
 compose-demo:
-	docker compose --profile demo up --build
+	docker compose --profile demo up
+
+## compose-build: build both images from this checkout and run production
+compose-build:
+	docker compose -f docker-compose.build.yml up --build -d
 
 clean:
 	rm -rf dist data

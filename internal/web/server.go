@@ -21,8 +21,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/o5ten/cinevote/internal/auth"
 	"github.com/o5ten/cinevote/internal/config"
 	"github.com/o5ten/cinevote/internal/demo"
+	"github.com/o5ten/cinevote/internal/mattermost"
 	"github.com/o5ten/cinevote/internal/poster"
 	"github.com/o5ten/cinevote/internal/store"
 )
@@ -54,15 +56,27 @@ type Server struct {
 	tmpl    map[string]*template.Template
 	mux     *http.ServeMux
 	logins  *throttle
+	// mm is the chat server whose accounts identify people, when that mode is
+	// configured. A disabled client means CineVote uses its own accounts.
+	mm      *mattermost.Client
+	signer  *auth.Signer
+	members memberCache
 	// assetVersion busts the browser cache when the CSS or JS changes. Without
 	// it, a deploy leaves everyone on the old assets until max-age expires.
 	assetVersion string
 }
 
-func New(cfg config.Config, st *store.Store, pc *poster.Service, log *slog.Logger) (*Server, error) {
+func New(cfg config.Config, st *store.Store, pc *poster.Service, mm *mattermost.Client, log *slog.Logger) (*Server, error) {
 	tmpl, err := parseTemplates()
 	if err != nil {
 		return nil, err
+	}
+	signer, err := auth.NewSigner()
+	if err != nil {
+		return nil, err
+	}
+	if mm == nil {
+		mm = mattermost.New("", "")
 	}
 	version, err := hashAssets()
 	if err != nil {
@@ -75,6 +89,8 @@ func New(cfg config.Config, st *store.Store, pc *poster.Service, log *slog.Logge
 		log:          log,
 		tmpl:         tmpl,
 		logins:       newThrottle(10, 15*time.Minute),
+		mm:           mm,
+		signer:       signer,
 		assetVersion: version,
 	}
 	s.routes()
@@ -99,9 +115,19 @@ func (s *Server) routes() {
 	mux.HandleFunc("GET /{$}", s.requireUser(s.handleIndex))
 	mux.HandleFunc("GET /login", s.handleLoginForm)
 	mux.HandleFunc("POST /login", s.handleLogin)
-	mux.HandleFunc("GET /register", s.handleRegisterForm)
-	mux.HandleFunc("POST /register", s.handleRegister)
 	mux.HandleFunc("POST /logout", s.requireUser(s.handleLogout))
+
+	if s.cfg.UseMattermost() {
+		// Identity comes from the chat directory, so there is nothing to
+		// register and no account page to expose.
+		mux.HandleFunc("GET /jagar", s.handleIdentityForm)
+		mux.HandleFunc("POST /jagar", s.handleIdentitySave)
+		mux.HandleFunc("POST /byt-anvandare", s.requireUser(s.handleSwitchIdentity))
+		mux.HandleFunc("GET /medlemmar", s.requirePasswordHolder(s.handleMembers))
+	} else {
+		mux.HandleFunc("GET /register", s.handleRegisterForm)
+		mux.HandleFunc("POST /register", s.handleRegister)
+	}
 
 	mux.HandleFunc("POST /movies", s.requireUser(s.handleAddMovie))
 	mux.HandleFunc("POST /movies/{id}/vote", s.requireUser(s.handleVote))
@@ -165,6 +191,16 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, csrf := s.session(r)
 		if user == nil {
+			// Password accepted but nobody said who they are yet: finish that
+			// rather than asking for the password again.
+			if _, pending := s.pendingRole(r); pending && s.cfg.UseMattermost() {
+				if r.Method == http.MethodGet {
+					http.Redirect(w, r, "/jagar", http.StatusSeeOther)
+					return
+				}
+				http.Error(w, "välj vem du är först", http.StatusUnauthorized)
+				return
+			}
 			if r.Method == http.MethodGet {
 				http.Redirect(w, r, "/login", http.StatusSeeOther)
 				return
@@ -178,6 +214,23 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		next(w, r)
+	}
+}
+
+// requirePasswordHolder allows anyone who has passed the shared password, even
+// before they have said who they are — the identity picker needs the directory
+// to offer, and that is the only thing this guards.
+func (s *Server) requirePasswordHolder(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if user, csrf := s.session(r); user != nil {
+			next(w, s.withUser(r, user, csrf))
+			return
+		}
+		if _, pending := s.pendingRole(r); pending {
+			next(w, r)
+			return
+		}
+		http.Error(w, "logga in först", http.StatusUnauthorized)
 	}
 }
 
@@ -451,6 +504,8 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page
 	data["OMDbKeyURL"] = OMDbKeyURL
 	data["TMDBKeyURL"] = TMDBKeyURL
 	data["TMDBEnabled"] = s.posters.RecommendationsEnabled()
+	data["UseMattermost"] = s.cfg.UseMattermost()
+	data["ChatURL"] = s.mm.BaseURL()
 	data["Demo"] = s.cfg.Demo
 	if s.cfg.Demo {
 		data["DemoPassword"] = demo.Password
