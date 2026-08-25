@@ -543,3 +543,122 @@ func TestSessionRoleGrantsAdmin(t *testing.T) {
 		t.Error("the account should not have been promoted")
 	}
 }
+
+// Films on equal votes are separated by the film itself: highest rating first,
+// then the most recently released. This is what decides the premiere.
+func TestEqualVotesArePremieredByRatingThenYear(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	ada := mustUser(t, st, "Ada")
+
+	add := func(title, year, rating string) int64 {
+		t.Helper()
+		id, err := st.AddMovie(ctx, NewMovie{
+			Title: title, Year: year, Rating: rating, SuggestedBy: ada.ID,
+		})
+		if err != nil {
+			t.Fatalf("add %s: %v", title, err)
+		}
+		return id
+	}
+
+	// Deliberately added worst-first, so the order cannot come from insertion.
+	unrated := add("Unrated", "2024", "")
+	older := add("Older", "1999", "8.1")
+	newer := add("Newer", "2021", "8.1")
+	best := add("Best", "1974", "9.2")
+
+	// One vote each: nothing but rating and year can separate them.
+	for _, id := range []int64{unrated, older, newer, best} {
+		if err := st.Vote(ctx, ada.ID, id); err != nil {
+			t.Fatalf("vote: %v", err)
+		}
+	}
+
+	movies, err := st.Movies(ctx, ada.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Best", "Newer", "Older", "Unrated"}
+	for i, title := range want {
+		if movies[i].Title != title {
+			t.Errorf("position %d = %q, want %q (full order: %v)", i, movies[i].Title, title, titlesOf(movies))
+		}
+		if movies[i].Rank != i+1 {
+			t.Errorf("%s has rank %d, want %d", movies[i].Title, movies[i].Rank, i+1)
+		}
+	}
+}
+
+// More votes still beat a better film: the rating only breaks a tie.
+func TestVotesOutrankRating(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	ada := mustUser(t, st, "Ada")
+	bo := mustUser(t, st, "Bo")
+
+	popular, err := st.AddMovie(ctx, NewMovie{Title: "Popular", Year: "2001", Rating: "6.0", SuggestedBy: ada.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acclaimed, err := st.AddMovie(ctx, NewMovie{Title: "Acclaimed", Year: "2001", Rating: "9.5", SuggestedBy: ada.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range []*User{ada, bo} {
+		if err := st.Vote(ctx, u.ID, popular); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.Vote(ctx, ada.ID, acclaimed); err != nil {
+		t.Fatal(err)
+	}
+
+	movies, err := st.Movies(ctx, ada.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if movies[0].Title != "Popular" {
+		t.Fatalf("order = %v, want the film with more votes first", titlesOf(movies))
+	}
+}
+
+// Equal on every count: the earliest suggestion stays ahead, so the order does
+// not wobble between requests.
+func TestIdenticalFilmsKeepAStableOrder(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	ada := mustUser(t, st, "Ada")
+
+	first, err := st.AddMovie(ctx, NewMovie{Title: "First", Year: "2020", Rating: "7.5", SuggestedBy: ada.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.AddMovie(ctx, NewMovie{Title: "Second", Year: "2020", Rating: "7.5", SuggestedBy: ada.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{first, second} {
+		if err := st.Vote(ctx, ada.ID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for i := 0; i < 3; i++ {
+		movies, err := st.Movies(ctx, ada.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if movies[0].Title != "First" {
+			t.Fatalf("read %d gave %v, want the earlier suggestion first", i, titlesOf(movies))
+		}
+	}
+}
+
+func titlesOf(movies []Movie) []string {
+	out := make([]string, 0, len(movies))
+	for _, m := range movies {
+		out = append(out, m.Title)
+	}
+	return out
+}

@@ -512,9 +512,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return res.LastInsertId()
 }
 
-// Movies returns every movie ordered for display: unseen first, most votes
-// first, then oldest suggestion first so ties are stable. Rank is filled in
-// for unseen movies, which is what the "top 3" section keys off.
+// Movies returns every movie ordered for display, which is also the order that
+// decides what gets premiered: unseen first, then most votes, then — for films
+// on equal votes — the highest rated, then the most recently released, and
+// finally the earliest suggested so the order is always stable. Rank is filled
+// in for unseen movies, which is what the "top 3" section keys off.
 func (s *Store) Movies(ctx context.Context, viewerID int64) ([]Movie, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT m.id, m.title, m.year, m.poster_url, m.overview,
@@ -528,7 +530,16 @@ SELECT m.id, m.title, m.year, m.poster_url, m.overview,
                   WHERE v3.movie_id = m.id), '') AS voters
   FROM movies m
   LEFT JOIN users u ON u.id = m.suggested_by
- ORDER BY m.seen ASC, votes DESC, m.created_at ASC`, viewerID)
+ ORDER BY m.seen ASC,
+          votes DESC,
+          -- Equal support is broken by the better film: highest rating first,
+          -- then the most recently released. Both are stored as text, so they
+          -- are cast; an empty one becomes NULL, which SQLite sorts last in a
+          -- DESC order, so an unrated or undated film loses the tie-break.
+          CAST(NULLIF(m.rating, '') AS REAL) DESC,
+          CAST(NULLIF(m.year, '') AS INTEGER) DESC,
+          -- Last resort, so the order never wobbles between requests.
+          m.created_at ASC`, viewerID)
 	if err != nil {
 		return nil, fmt.Errorf("list movies: %w", err)
 	}
