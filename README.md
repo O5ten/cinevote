@@ -38,7 +38,8 @@ go run ./cmd/cinevote -demo        # eller: make demo
 docker compose --profile demo up   # eller: make compose-demo
 ```
 
-Eller direkt från den publicerade imagen, utan att klona något:
+Eller direkt från den publicerade imagen, utan att klona något (finns så snart
+CI har byggt en push till `main`, och paketet är satt till publikt i GHCR):
 
 ```bash
 docker run --rm -p 8080:8080 -e CINEVOTE_DB= ghcr.io/o5ten/cinevote:latest -demo
@@ -197,8 +198,18 @@ inline-styles eller inline-script i mallarna, och inga externa fonter.
    `ghcr.io/o5ten/cinevote` (inte på PR:er) och rök-testar demoläget i en
    körande container.
 
-Taggar (`v1.2.3`) blir imagetaggar `1.2.3`, `1.2` och `latest`; pushar till
-`main` blir `main` och `latest` plus en `sha-`-tagg.
+Vilka imagetaggar som skapas:
+
+| Händelse | Taggar |
+| --- | --- |
+| push till `main` | `latest`, `main`, `sha-<kort sha>` |
+| tagg `v1.2.3` | `1.2.3`, `1.2`, `sha-<kort sha>` |
+| pull request | `pr-<nummer>`, `sha-<kort sha>` — byggs men pushas inte |
+
+`:latest` följer alltså alltid `main`, aldrig en versionstagg. Vill du att en
+release ska flytta `latest` istället, byt `enable={{is_default_branch}}` mot
+`enable={{is_default_branch}} || startsWith(github.ref, 'refs/tags/v')` i
+`.github/workflows/ci.yml`.
 
 Första pushen till `main` skapar paketet i GHCR. Det blir privat som standard —
 gör det publikt under **Packages → cinevote → Package settings** om vem som
