@@ -1,0 +1,123 @@
+{{define "content"}}
+
+<section class="hero">
+  <div class="hero-text">
+    <p class="eyebrow">Nästa filmkväll</p>
+    {{if .Winner}}
+      <h1 class="hero-title">{{.Winner.Title}}{{with .Winner.Year}} <span class="year">{{.}}</span>{{end}}</h1>
+      <p class="hero-sub">
+        Leder med <strong>{{.Winner.Votes}}</strong> {{plural .Winner.Votes "röst" "röster"}}
+        {{with .Winner.Voters}} · {{join . ", "}}{{end}}
+      </p>
+      <p class="hero-hint">Vinnaren är den film som flest personer har röstat på. Rösta om — det går att flytta rösterna ända fram till filmkvällen.</p>
+    {{else}}
+      <h1 class="hero-title">Ingen film leder än</h1>
+      <p class="hero-sub">Lägg in ett förslag och lägg din första röst.</p>
+    {{end}}
+  </div>
+  {{with .Winner}}
+  <div class="hero-art">
+    {{template "poster" .}}
+  </div>
+  {{end}}
+</section>
+
+<section class="budget" aria-label="Dina röster">
+  <div class="dots" role="img" aria-label="{{.VotesUsed}} av {{.MaxVotes}} röster använda">
+    {{range $i := seq .MaxVotes}}<span class="dot{{if lt $i $.VotesUsed}} dot-used{{end}}"></span>{{end}}
+  </div>
+  <p class="budget-text">
+    {{if .VotesLeft}}
+      Du har <strong>{{.VotesLeft}}</strong> {{plural .VotesLeft "röst" "röster"}} kvar av {{.MaxVotes}}.
+    {{else}}
+      Alla dina {{.MaxVotes}} röster är utlagda. Ta tillbaka en röst för att flytta den.
+    {{end}}
+    <span class="budget-meta">{{.People}} {{plural .People "användare" "användare"}} · en röst per film</span>
+  </p>
+</section>
+
+<details class="suggest" {{if not .Top}}open{{end}}>
+  <summary><span class="plus" aria-hidden="true">+</span> Föreslå en film</summary>
+
+  <form class="suggest-form" method="post" action="/movies" id="suggest-form">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="source_id" id="source-id" value="">
+
+    <div class="field field-wide">
+      <label for="title">Titel</label>
+      <div class="searchrow">
+        <input type="text" id="title" name="title" maxlength="200" required autocomplete="off"
+               placeholder="t.ex. Blade Runner">
+        {{if .LookupEnabled}}
+        <button class="btn btn-search" type="button" id="search-btn"
+                data-label="{{.LookupSource}}">Sök på {{.LookupSource}}</button>
+        {{end}}
+      </div>
+      {{if .LookupEnabled}}
+      <p class="hint">Sök för att hämta poster, betyg och speltid från {{.LookupSource}} — eller fyll i själv.</p>
+      {{else}}
+      <p class="hint">Ingen filmdatabas är konfigurerad, så klistra in en posterlänk själv.
+        Vill du få poster, betyg och speltid automatiskt? Skaffa en gratisnyckel på
+        <a href="{{.OMDbKeyURL}}" target="_blank" rel="noopener noreferrer">omdbapi.com/apikey.aspx</a>
+        och sätt <code>OMDB_API_KEY</code>.</p>
+      {{end}}
+    </div>
+
+    <div id="search-results" class="results" hidden></div>
+
+    <div class="field">
+      <label for="year">Årtal <span class="opt">frivilligt</span></label>
+      <input type="text" id="year" name="year" inputmode="numeric" pattern="(18|19|20|21)[0-9]{2}"
+             maxlength="4" placeholder="1982" autocomplete="off">
+    </div>
+
+    <div class="field field-wide">
+      <label for="poster_url">Posterlänk <span class="opt">frivilligt</span></label>
+      <input type="url" id="poster_url" name="poster_url" placeholder="https://…" autocomplete="off">
+    </div>
+
+    <div class="field field-wide">
+      <label for="overview">Kort beskrivning <span class="opt">frivilligt</span></label>
+      <textarea id="overview" name="overview" rows="2" maxlength="2000"
+                placeholder="Fylls i automatiskt om filmen hittas."></textarea>
+    </div>
+
+    <div class="field field-actions">
+      <button class="btn btn-primary" type="submit">Lägg till förslaget</button>
+    </div>
+  </form>
+</details>
+
+{{if .Top}}
+<section class="section">
+  <h2 class="section-title">Toppen <span class="section-note">de {{len .Top}} mest röstade</span></h2>
+  <div class="podium">
+    {{range .Top}}{{template "card" (dict "M" . "Variant" "top" "Root" $)}}{{end}}
+  </div>
+</section>
+{{end}}
+
+<section class="section">
+  <h2 class="section-title">
+    {{if .Top}}Fler förslag{{else}}Förslag{{end}}
+    <span class="section-note">{{len .Rest}} {{plural (len .Rest) "film" "filmer"}}</span>
+  </h2>
+  {{if .Rest}}
+  <div class="grid">
+    {{range .Rest}}{{template "card" (dict "M" . "Variant" "grid" "Root" $)}}{{end}}
+  </div>
+  {{else}}
+  <p class="empty">Inga fler förslag just nu. Lägg in en film ovan.</p>
+  {{end}}
+</section>
+
+{{if .Seen}}
+<section class="section section-seen">
+  <h2 class="section-title">Sedda filmer <span class="section-note">rösterna är återlämnade</span></h2>
+  <div class="grid grid-seen">
+    {{range .Seen}}{{template "card" (dict "M" . "Variant" "seen" "Root" $)}}{{end}}
+  </div>
+</section>
+{{end}}
+
+{{end}}

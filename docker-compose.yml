@@ -1,0 +1,54 @@
+services:
+  cinevote:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+    image: ghcr.io/mikaelo/cinevote:latest
+    container_name: cinevote
+    restart: unless-stopped
+    ports:
+      - "${CINEVOTE_PORT:-8080}:8080"
+    environment:
+      # Movie data. OMDB_API_KEY enables poster/rating lookups; without it the
+      # app still works with hand-pasted poster links.
+      OMDB_API_KEY: ${OMDB_API_KEY:-}
+      CINEVOTE_POSTER_SOURCE: ${CINEVOTE_POSTER_SOURCE:-}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+
+      # The single admin account. Leave the password unset on a fresh volume
+      # and one is generated and printed once in the container logs.
+      CINEVOTE_ADMIN_USERNAME: ${CINEVOTE_ADMIN_USERNAME:-admin}
+      CINEVOTE_ADMIN_PASSWORD: ${CINEVOTE_ADMIN_PASSWORD:-}
+
+      # Optional shared invite code for sign-up.
+      CINEVOTE_REGISTRATION_CODE: ${CINEVOTE_REGISTRATION_CODE:-}
+
+      CINEVOTE_SITE_NAME: ${CINEVOTE_SITE_NAME:-CineVote}
+      CINEVOTE_MAX_VOTES: ${CINEVOTE_MAX_VOTES:-5}
+      CINEVOTE_SECURE_COOKIES: ${CINEVOTE_SECURE_COOKIES:-false}
+    volumes:
+      - cinevote-data:/data
+
+  # Zero-configuration demo: no .env, no API key, no volume. Everything is
+  # seeded on start and thrown away on stop.
+  #   docker compose --profile demo up
+  demo:
+    profiles: ["demo"]
+    build:
+      context: .
+    image: ghcr.io/mikaelo/cinevote:latest
+    container_name: cinevote-demo
+    command: ["-demo"]
+    ports:
+      - "${CINEVOTE_DEMO_PORT:-8080}:8080"
+    environment:
+      # Empty so the demo picks its own throwaway database and reseeds on every
+      # start, instead of the persistent path baked into the image.
+      CINEVOTE_DB: ""
+      # A key is optional even here — the demo ships with its own poster data.
+      # Get a free one at https://www.omdbapi.com/apikey.aspx to search live.
+      OMDB_API_KEY: ${OMDB_API_KEY:-}
+
+volumes:
+  cinevote-data:

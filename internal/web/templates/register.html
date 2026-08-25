@@ -1,0 +1,32 @@
+{{define "content"}}
+<section class="auth">
+  <h1 class="auth-title">Skapa konto</h1>
+  <p class="auth-sub">Varje användare får {{.MaxVotes}} röster att fördela.</p>
+
+  {{with .Error}}<p class="formerror" role="alert">{{.}}</p>{{end}}
+
+  <form class="authform" method="post" action="/register">
+    <div class="field field-wide">
+      <label for="username">Användarnamn</label>
+      <input type="text" id="username" name="username" value="{{.Name}}" required autofocus
+             autocomplete="username" maxlength="32" minlength="2">
+    </div>
+    <div class="field field-wide">
+      <label for="password">Lösenord</label>
+      <input type="password" id="password" name="password" required autocomplete="new-password"
+             minlength="{{.MinPassword}}">
+      <p class="hint">Minst {{.MinPassword}} tecken.</p>
+    </div>
+    {{if .NeedsCode}}
+    <div class="field field-wide">
+      <label for="code">Inbjudningskod</label>
+      <input type="text" id="code" name="code" required autocomplete="off">
+      <p class="hint">Koden får du av den som driver filmkvällen.</p>
+    </div>
+    {{end}}
+    <button class="btn btn-primary btn-block" type="submit">Skapa konto</button>
+  </form>
+
+  <p class="auth-alt">Redan medlem? <a href="/login">Logga in</a>.</p>
+</section>
+{{end}}

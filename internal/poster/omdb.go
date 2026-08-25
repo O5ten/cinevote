@@ -1,0 +1,166 @@
+package poster
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+)
+
+// OMDb talks to omdbapi.com, the free IMDb data API. A key is a free signup at
+// https://www.omdbapi.com/apikey.aspx and goes in OMDB_API_KEY.
+type OMDb struct {
+	apiKey string
+	http   *http.Client
+	base   string // overridable for tests
+}
+
+func NewOMDb(apiKey string, hc *http.Client) *OMDb {
+	return &OMDb{
+		apiKey: strings.TrimSpace(apiKey),
+		http:   defaultHTTP(hc),
+		base:   "https://www.omdbapi.com/",
+	}
+}
+
+func (o *OMDb) Source() Source { return SourceIMDb }
+
+// omdbSearch is the shape of the ?s= (search) response.
+type omdbSearch struct {
+	Search []struct {
+		Title  string `json:"Title"`
+		Year   string `json:"Year"`
+		IMDbID string `json:"imdbID"`
+		Type   string `json:"Type"`
+		Poster string `json:"Poster"`
+	} `json:"Search"`
+	Response string `json:"Response"`
+	Error    string `json:"Error"`
+}
+
+// omdbDetail is the shape of the ?i= / ?t= (single title) response.
+type omdbDetail struct {
+	Title      string `json:"Title"`
+	Year       string `json:"Year"`
+	Runtime    string `json:"Runtime"`
+	Genre      string `json:"Genre"`
+	Plot       string `json:"Plot"`
+	Poster     string `json:"Poster"`
+	IMDbRating string `json:"imdbRating"`
+	IMDbID     string `json:"imdbID"`
+	Type       string `json:"Type"`
+	Response   string `json:"Response"`
+	Error      string `json:"Error"`
+}
+
+func (o *OMDb) Search(ctx context.Context, query string, limit int) ([]Result, error) {
+	var body omdbSearch
+	if err := o.get(ctx, url.Values{
+		"s":    {query},
+		"type": {"movie"},
+	}, &body); err != nil {
+		return nil, err
+	}
+	// OMDb answers "False" for an empty result set as well as for real errors;
+	// "not found" is not something the user needs to see as a failure.
+	if !strings.EqualFold(body.Response, "True") {
+		if body.Error != "" && !strings.Contains(strings.ToLower(body.Error), "not found") {
+			return nil, fmt.Errorf("omdb search: %s", body.Error)
+		}
+		return nil, nil
+	}
+
+	out := make([]Result, 0, limit)
+	for _, r := range body.Search {
+		if len(out) == limit {
+			break
+		}
+		title := strings.TrimSpace(r.Title)
+		if title == "" {
+			continue
+		}
+		out = append(out, Result{
+			Source:    SourceIMDb,
+			IMDbID:    strings.TrimSpace(r.IMDbID),
+			Title:     title,
+			Year:      firstYear(r.Year),
+			PosterURL: naOr(r.Poster),
+		})
+	}
+	return out, nil
+}
+
+func (o *OMDb) Detail(ctx context.Context, id string) (*Result, error) {
+	params := url.Values{"plot": {"short"}}
+	// Accept either an IMDb id or a raw title, so Best works even when a
+	// search hit came back without an id.
+	if strings.HasPrefix(id, "tt") {
+		params.Set("i", id)
+	} else {
+		params.Set("t", id)
+		params.Set("type", "movie")
+	}
+
+	var body omdbDetail
+	if err := o.get(ctx, params, &body); err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(body.Response, "True") {
+		if body.Error != "" && !strings.Contains(strings.ToLower(body.Error), "not found") {
+			return nil, fmt.Errorf("omdb detail: %s", body.Error)
+		}
+		return nil, nil
+	}
+
+	return &Result{
+		Source:    SourceIMDb,
+		IMDbID:    strings.TrimSpace(body.IMDbID),
+		Title:     strings.TrimSpace(body.Title),
+		Year:      firstYear(body.Year),
+		PosterURL: naOr(body.Poster),
+		Overview:  naOr(body.Plot),
+		Rating:    naOr(body.IMDbRating),
+		Runtime:   naOr(body.Runtime),
+		Genres:    naOr(body.Genre),
+	}, nil
+}
+
+func (o *OMDb) get(ctx context.Context, params url.Values, out any) error {
+	params.Set("apikey", o.apiKey)
+	params.Set("r", "json")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.base+"?"+params.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := o.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("omdb request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("omdb request: unexpected status %s", resp.Status)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("omdb decode: %w", err)
+	}
+	return nil
+}
+
+// firstYear trims OMDb's range notation ("1999-2004", "2010–") to a single year.
+func firstYear(raw string) string {
+	raw = naOr(raw)
+	for i, r := range raw {
+		if r < '0' || r > '9' {
+			return raw[:i]
+		}
+		if i == 3 {
+			return raw[:4]
+		}
+	}
+	return raw
+}

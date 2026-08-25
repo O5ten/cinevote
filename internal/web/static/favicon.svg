@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="CineVote">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff5d73"/>
+      <stop offset="0.55" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#2ee6c5"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#g)"/>
+  <rect x="12" y="18" width="40" height="30" rx="5" fill="#0b0818" opacity="0.85"/>
+  <path d="M27 26.5v13l11-6.5z" fill="#ffc247"/>
+  <circle cx="17.5" cy="23" r="2" fill="#2ee6c5"/>
+  <circle cx="17.5" cy="43" r="2" fill="#2ee6c5"/>
+  <circle cx="46.5" cy="23" r="2" fill="#ff6ec7"/>
+  <circle cx="46.5" cy="43" r="2" fill="#ff6ec7"/>
+</svg>

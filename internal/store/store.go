@@ -1,0 +1,605 @@
+// Package store owns all persistence for CineVote: users, sessions, movie
+// suggestions and votes. It is deliberately the only place that knows SQL.
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+// DefaultMaxVotes is the number of votes each user may spread over the
+// unseen movies. One vote per movie, so this is also the max number of
+// movies a user can back at once.
+const DefaultMaxVotes = 5
+
+var (
+	ErrNotFound      = errors.New("not found")
+	ErrDuplicateUser = errors.New("username already taken")
+	ErrDuplicateFilm = errors.New("movie already suggested")
+	ErrNoVotesLeft   = errors.New("no votes left")
+	ErrAlreadyVoted  = errors.New("already voted for this movie")
+	ErrMovieSeen     = errors.New("movie is already marked as seen")
+)
+
+type Store struct {
+	db *sql.DB
+	// MaxVotes is the per-user vote budget. Votes on movies that have been
+	// marked as seen do not count against it.
+	MaxVotes int
+}
+
+// Open opens (and migrates) the SQLite database at path. Use ":memory:" for
+// tests. The pragmas matter: WAL keeps readers from blocking the writer and
+// busy_timeout stops "database is locked" under concurrent votes.
+func Open(path string) (*Store, error) {
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	if path == ":memory:" {
+		dsn = "file::memory:?cache=shared&_pragma=foreign_keys(1)"
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+	// SQLite takes a single writer; keeping the pool small avoids lock churn.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("ping db: %w", err)
+	}
+	s := &Store{db: db, MaxVotes: DefaultMaxVotes}
+	if err := s.migrate(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) Close() error { return s.db.Close() }
+
+func (s *Store) migrate() error {
+	const schema = `
+CREATE TABLE IF NOT EXISTS users (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	username      TEXT    NOT NULL,
+	username_ci   TEXT    NOT NULL UNIQUE,
+	password_hash TEXT    NOT NULL,
+	is_admin      INTEGER NOT NULL DEFAULT 0,
+	created_at    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+	token      TEXT    PRIMARY KEY,
+	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	csrf       TEXT    NOT NULL,
+	expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS movies (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	title        TEXT    NOT NULL,
+	title_ci     TEXT    NOT NULL,
+	year         TEXT    NOT NULL DEFAULT '',
+	poster_url   TEXT    NOT NULL DEFAULT '',
+	overview     TEXT    NOT NULL DEFAULT '',
+	imdb_id      TEXT    NOT NULL DEFAULT '',
+	tmdb_id      INTEGER,
+	rating       TEXT    NOT NULL DEFAULT '',
+	runtime      TEXT    NOT NULL DEFAULT '',
+	genres       TEXT    NOT NULL DEFAULT '',
+	suggested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+	seen         INTEGER NOT NULL DEFAULT 0,
+	seen_at      INTEGER,
+	created_at   INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_movies_title_year ON movies(title_ci, year);
+
+CREATE TABLE IF NOT EXISTS votes (
+	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	movie_id   INTEGER NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+	created_at INTEGER NOT NULL,
+	PRIMARY KEY (user_id, movie_id)
+);
+CREATE INDEX IF NOT EXISTS idx_votes_movie ON votes(movie_id);
+`
+	if _, err := s.db.Exec(schema); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	return nil
+}
+
+/* ---------------------------------------------------------------- users --- */
+
+type User struct {
+	ID           int64
+	Username     string
+	PasswordHash string
+	IsAdmin      bool
+	CreatedAt    time.Time
+}
+
+func (s *Store) CreateUser(ctx context.Context, username, passwordHash string, isAdmin bool) (*User, error) {
+	now := time.Now()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO users (username, username_ci, password_hash, is_admin, created_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		username, ci(username), passwordHash, boolToInt(isAdmin), now.Unix())
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrDuplicateUser
+		}
+		return nil, fmt.Errorf("create user: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return &User{ID: id, Username: username, PasswordHash: passwordHash, IsAdmin: isAdmin, CreatedAt: now}, nil
+}
+
+func (s *Store) UserByUsername(ctx context.Context, username string) (*User, error) {
+	return s.scanUser(s.db.QueryRowContext(ctx,
+		`SELECT id, username, password_hash, is_admin, created_at FROM users WHERE username_ci = ?`, ci(username)))
+}
+
+func (s *Store) UserByID(ctx context.Context, id int64) (*User, error) {
+	return s.scanUser(s.db.QueryRowContext(ctx,
+		`SELECT id, username, password_hash, is_admin, created_at FROM users WHERE id = ?`, id))
+}
+
+func (s *Store) scanUser(row *sql.Row) (*User, error) {
+	var u User
+	var admin int
+	var created int64
+	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &admin, &created); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("scan user: %w", err)
+	}
+	u.IsAdmin = admin != 0
+	u.CreatedAt = time.Unix(created, 0)
+	return &u, nil
+}
+
+// UpsertAdmin creates or updates the single admin account and demotes anyone
+// else who happens to carry the flag. The requirement list asks for exactly
+// one admin, so we enforce that here rather than trusting callers.
+func (s *Store) UpsertAdmin(ctx context.Context, username, passwordHash string) (*User, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO users (username, username_ci, password_hash, is_admin, created_at)
+		 VALUES (?, ?, ?, 1, ?)
+		 ON CONFLICT(username_ci) DO UPDATE SET password_hash = excluded.password_hash, is_admin = 1`,
+		username, ci(username), passwordHash, time.Now().Unix()); err != nil {
+		return nil, fmt.Errorf("upsert admin: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET is_admin = 0 WHERE username_ci <> ?`, ci(username)); err != nil {
+		return nil, fmt.Errorf("demote others: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.UserByUsername(ctx, username)
+}
+
+// UserStat is a row for the admin user list.
+type UserStat struct {
+	User
+	VotesUsed int
+	Movies    int
+}
+
+func (s *Store) UserStats(ctx context.Context) ([]UserStat, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT u.id, u.username, u.is_admin, u.created_at,
+       (SELECT COUNT(*) FROM votes v JOIN movies m ON m.id = v.movie_id
+         WHERE v.user_id = u.id AND m.seen = 0) AS votes_used,
+       (SELECT COUNT(*) FROM movies m2 WHERE m2.suggested_by = u.id)  AS suggested
+  FROM users u
+ ORDER BY u.is_admin DESC, u.username_ci ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("user stats: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UserStat
+	for rows.Next() {
+		var st UserStat
+		var admin int
+		var created int64
+		if err := rows.Scan(&st.ID, &st.Username, &admin, &created, &st.VotesUsed, &st.Movies); err != nil {
+			return nil, fmt.Errorf("scan user stat: %w", err)
+		}
+		st.IsAdmin = admin != 0
+		st.CreatedAt = time.Unix(created, 0)
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CountUsers(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
+	return n, err
+}
+
+// DeleteUser removes a user; their votes go with them (ON DELETE CASCADE) and
+// their suggestions stay but lose the attribution.
+func (s *Store) DeleteUser(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ? AND is_admin = 0`, id)
+	if err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+/* ------------------------------------------------------------- sessions --- */
+
+func (s *Store) CreateSession(ctx context.Context, userID int64, token, csrf string, expires time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (token, user_id, csrf, expires_at) VALUES (?, ?, ?, ?)`,
+		token, userID, csrf, expires.Unix())
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	return nil
+}
+
+// Session resolves a cookie token to its user, ignoring expired rows.
+func (s *Store) Session(ctx context.Context, token string) (*User, string, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT u.id, u.username, u.password_hash, u.is_admin, u.created_at, s.csrf
+  FROM sessions s JOIN users u ON u.id = s.user_id
+ WHERE s.token = ? AND s.expires_at > ?`, token, time.Now().Unix())
+
+	var u User
+	var admin int
+	var created int64
+	var csrf string
+	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &admin, &created, &csrf); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "", ErrNotFound
+		}
+		return nil, "", fmt.Errorf("scan session: %w", err)
+	}
+	u.IsAdmin = admin != 0
+	u.CreatedAt = time.Unix(created, 0)
+	return &u, csrf, nil
+}
+
+func (s *Store) DeleteSession(ctx context.Context, token string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token = ?`, token)
+	return err
+}
+
+func (s *Store) DeleteExpiredSessions(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, time.Now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+/* --------------------------------------------------------------- movies --- */
+
+type Movie struct {
+	ID          int64
+	Title       string
+	Year        string
+	PosterURL   string
+	Overview    string
+	IMDbID      string // e.g. "tt0083658", from OMDb
+	TMDBID      int64
+	Rating      string // IMDb rating as text, e.g. "8.1"
+	Runtime     string // e.g. "117 min"
+	Genres      string // comma separated
+	SuggestedBy string // username, empty if the account is gone
+	Seen        bool
+	SeenAt      time.Time
+	CreatedAt   time.Time
+
+	Votes     int      // number of people backing it
+	VotedByMe bool     // for the viewing user
+	Voters    []string // usernames, for the tooltip / admin view
+	Rank      int      // 1-based rank among unseen movies, by votes
+}
+
+// IMDbURL is the public IMDb page, or "" when the movie was added by hand.
+func (m Movie) IMDbURL() string {
+	if m.IMDbID == "" {
+		return ""
+	}
+	return "https://www.imdb.com/title/" + m.IMDbID + "/"
+}
+
+type NewMovie struct {
+	Title       string
+	Year        string
+	PosterURL   string
+	Overview    string
+	IMDbID      string
+	TMDBID      int64
+	Rating      string
+	Runtime     string
+	Genres      string
+	SuggestedBy int64
+}
+
+func (s *Store) AddMovie(ctx context.Context, m NewMovie) (int64, error) {
+	var tmdb any
+	if m.TMDBID > 0 {
+		tmdb = m.TMDBID
+	}
+	res, err := s.db.ExecContext(ctx, `
+INSERT INTO movies (title, title_ci, year, poster_url, overview, imdb_id, tmdb_id,
+                    rating, runtime, genres, suggested_by, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Title, ci(m.Title), m.Year, m.PosterURL, m.Overview, m.IMDbID, tmdb,
+		m.Rating, m.Runtime, m.Genres, m.SuggestedBy, time.Now().Unix())
+	if err != nil {
+		if isUniqueViolation(err) {
+			return 0, ErrDuplicateFilm
+		}
+		return 0, fmt.Errorf("add movie: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// Movies returns every movie ordered for display: unseen first, most votes
+// first, then oldest suggestion first so ties are stable. Rank is filled in
+// for unseen movies, which is what the "top 3" section keys off.
+func (s *Store) Movies(ctx context.Context, viewerID int64) ([]Movie, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT m.id, m.title, m.year, m.poster_url, m.overview,
+       m.imdb_id, COALESCE(m.tmdb_id, 0), m.rating, m.runtime, m.genres,
+       COALESCE(u.username, ''),
+       m.seen, COALESCE(m.seen_at, 0), m.created_at,
+       (SELECT COUNT(*) FROM votes v WHERE v.movie_id = m.id) AS votes,
+       EXISTS(SELECT 1 FROM votes v2 WHERE v2.movie_id = m.id AND v2.user_id = ?) AS voted_by_me,
+       COALESCE((SELECT GROUP_CONCAT(vu.username, ', ')
+                   FROM votes v3 JOIN users vu ON vu.id = v3.user_id
+                  WHERE v3.movie_id = m.id), '') AS voters
+  FROM movies m
+  LEFT JOIN users u ON u.id = m.suggested_by
+ ORDER BY m.seen ASC, votes DESC, m.created_at ASC`, viewerID)
+	if err != nil {
+		return nil, fmt.Errorf("list movies: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Movie
+	rank := 0
+	for rows.Next() {
+		var m Movie
+		var seen, voted int
+		var seenAt, created int64
+		var voters string
+		if err := rows.Scan(&m.ID, &m.Title, &m.Year, &m.PosterURL, &m.Overview,
+			&m.IMDbID, &m.TMDBID, &m.Rating, &m.Runtime, &m.Genres,
+			&m.SuggestedBy, &seen, &seenAt, &created, &m.Votes, &voted, &voters); err != nil {
+			return nil, fmt.Errorf("scan movie: %w", err)
+		}
+		m.Seen = seen != 0
+		m.VotedByMe = voted != 0
+		if seenAt > 0 {
+			m.SeenAt = time.Unix(seenAt, 0)
+		}
+		m.CreatedAt = time.Unix(created, 0)
+		if voters != "" {
+			m.Voters = strings.Split(voters, ", ")
+		}
+		if !m.Seen {
+			rank++
+			m.Rank = rank
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) MovieByID(ctx context.Context, id int64) (*Movie, error) {
+	var m Movie
+	var seen int
+	var seenAt, created int64
+	err := s.db.QueryRowContext(ctx, `
+SELECT m.id, m.title, m.year, m.poster_url, m.overview,
+       m.imdb_id, COALESCE(m.tmdb_id, 0), m.rating, m.runtime, m.genres,
+       COALESCE(u.username, ''), m.seen, COALESCE(m.seen_at, 0), m.created_at,
+       (SELECT COUNT(*) FROM votes v WHERE v.movie_id = m.id)
+  FROM movies m LEFT JOIN users u ON u.id = m.suggested_by
+ WHERE m.id = ?`, id).
+		Scan(&m.ID, &m.Title, &m.Year, &m.PosterURL, &m.Overview,
+			&m.IMDbID, &m.TMDBID, &m.Rating, &m.Runtime, &m.Genres,
+			&m.SuggestedBy, &seen, &seenAt, &created, &m.Votes)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get movie: %w", err)
+	}
+	m.Seen = seen != 0
+	if seenAt > 0 {
+		m.SeenAt = time.Unix(seenAt, 0)
+	}
+	m.CreatedAt = time.Unix(created, 0)
+	return &m, nil
+}
+
+func (s *Store) DeleteMovie(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM movies WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete movie: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetSeen marks a movie watched or puts it back in the running.
+//
+// Marking as seen hands every voter their vote back: the vote rows stay (so we
+// keep the record of who picked the winner) but they stop counting against the
+// budget, because VotesUsed only looks at unseen movies.
+//
+// Un-marking has to be careful the other way: a voter may already have spent
+// the returned vote elsewhere. Restoring their old vote would push them over
+// the limit, so those votes are dropped instead.
+func (s *Store) SetSeen(ctx context.Context, id int64, seen bool) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var seenAt any
+	if seen {
+		seenAt = time.Now().Unix()
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE movies SET seen = ?, seen_at = ? WHERE id = ?`,
+		boolToInt(seen), seenAt, id)
+	if err != nil {
+		return fmt.Errorf("set seen: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+
+	if !seen {
+		if _, err := tx.ExecContext(ctx, `
+DELETE FROM votes
+ WHERE movie_id = ?
+   AND user_id IN (
+       SELECT v.user_id FROM votes v
+         JOIN movies m ON m.id = v.movie_id
+        WHERE v.movie_id <> ? AND m.seen = 0
+        GROUP BY v.user_id
+       HAVING COUNT(*) >= ?)`, id, id, s.MaxVotes); err != nil {
+			return fmt.Errorf("prune over-budget votes: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+/* ---------------------------------------------------------------- votes --- */
+
+// VotesUsed counts a user's votes on movies that have not been seen yet.
+func (s *Store) VotesUsed(ctx context.Context, userID int64) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM votes v JOIN movies m ON m.id = v.movie_id
+ WHERE v.user_id = ? AND m.seen = 0`, userID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("votes used: %w", err)
+	}
+	return n, nil
+}
+
+func (s *Store) VotesLeft(ctx context.Context, userID int64) (int, error) {
+	used, err := s.VotesUsed(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	left := s.MaxVotes - used
+	if left < 0 {
+		left = 0
+	}
+	return left, nil
+}
+
+// Vote records one vote from a user for a movie. It enforces the whole rule
+// set in a single transaction: one vote per movie, at most MaxVotes votes on
+// unseen movies, and no voting for something already watched.
+func (s *Store) Vote(ctx context.Context, userID, movieID int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var seen int
+	if err := tx.QueryRowContext(ctx, `SELECT seen FROM movies WHERE id = ?`, movieID).Scan(&seen); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("lookup movie: %w", err)
+	}
+	if seen != 0 {
+		return ErrMovieSeen
+	}
+
+	var already int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM votes WHERE user_id = ? AND movie_id = ?`, userID, movieID).Scan(&already); err != nil {
+		return fmt.Errorf("check vote: %w", err)
+	}
+	if already > 0 {
+		return ErrAlreadyVoted
+	}
+
+	var used int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM votes v JOIN movies m ON m.id = v.movie_id
+ WHERE v.user_id = ? AND m.seen = 0`, userID).Scan(&used); err != nil {
+		return fmt.Errorf("count votes: %w", err)
+	}
+	if used >= s.MaxVotes {
+		return ErrNoVotesLeft
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO votes (user_id, movie_id, created_at) VALUES (?, ?, ?)`,
+		userID, movieID, time.Now().Unix()); err != nil {
+		if isUniqueViolation(err) {
+			return ErrAlreadyVoted
+		}
+		return fmt.Errorf("insert vote: %w", err)
+	}
+	return tx.Commit()
+}
+
+// Unvote takes a vote back. Votes on seen movies are historical record and
+// cannot be withdrawn.
+func (s *Store) Unvote(ctx context.Context, userID, movieID int64) error {
+	res, err := s.db.ExecContext(ctx, `
+DELETE FROM votes
+ WHERE user_id = ? AND movie_id = ?
+   AND movie_id IN (SELECT id FROM movies WHERE seen = 0)`, userID, movieID)
+	if err != nil {
+		return fmt.Errorf("unvote: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+/* --------------------------------------------------------------- helpers --- */
+
+func ci(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func isUniqueViolation(err error) bool {
+	// modernc.org/sqlite reports constraint failures in the message; matching
+	// on it keeps us free of a driver-specific error type import.
+	return err != nil && strings.Contains(strings.ToUpper(err.Error()), "UNIQUE CONSTRAINT FAILED")
+}

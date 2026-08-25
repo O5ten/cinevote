@@ -1,0 +1,141 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>{{with .Title}}{{.}} · {{end}}{{.SiteName}}</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<div class="aurora" aria-hidden="true"></div>
+
+<header class="topbar">
+  <a class="brand" href="/">
+    <span class="brand-mark" aria-hidden="true">🎬</span>
+    <span class="brand-name">{{.SiteName}}</span>
+  </a>
+  {{if .User}}
+  <nav class="topnav">
+    {{if .VotesLeft}}<span class="pill pill-votes" title="Röster kvar att fördela">{{.VotesLeft}} / {{.MaxVotes}} röster kvar</span>
+    {{else if .User}}<span class="pill pill-spent" title="Alla röster är utlagda">Alla röster utlagda</span>{{end}}
+    {{if .User.IsAdmin}}<a class="pill pill-admin" href="/admin">Admin</a>{{end}}
+    <span class="pill pill-user">{{.User.Username}}</span>
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button class="btn btn-ghost" type="submit">Logga ut</button>
+    </form>
+  </nav>
+  {{end}}
+</header>
+
+{{if .Demo}}
+<aside class="demobar">
+  <span class="demotag">Demo</span>
+  <span>Påhittad data. Alla konton har lösenordet <code>{{.DemoPassword}}</code>{{if .DemoEphemeral}}, och allt nollställs när servern startas om{{else}}, och ändringarna sparas i databasen{{end}}.</span>
+  {{if not .LookupEnabled}}
+  <span class="demohint">Vill du söka fram egna filmer? Hämta en gratis API-nyckel på
+    <a href="{{.OMDbKeyURL}}" target="_blank" rel="noopener noreferrer">omdbapi.com/apikey.aspx</a>
+    och starta om med <code>OMDB_API_KEY=...</code>.</span>
+  {{end}}
+</aside>
+{{end}}
+
+{{with .Flash}}
+<div class="flash flash-{{.Level}}" role="status">{{.Text}}</div>
+{{end}}
+
+<main class="page">
+{{template "content" .}}
+</main>
+
+<footer class="footer">
+  <span>{{.SiteName}} · filmröstning för filmkvällen</span>
+  {{if .LookupSource}}<span>Filmdata från {{.LookupSource}}</span>{{end}}
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
+{{end}}
+
+{{/* poster renders the artwork, or a coloured placeholder when we have none. */}}
+{{define "poster"}}
+{{if .PosterURL}}
+  <img class="poster" src="{{.PosterURL}}" alt="Filmposter för {{.Title}}" loading="lazy" referrerpolicy="no-referrer">
+{{else}}
+  <div class="poster poster-empty {{hueClass .ID}}" aria-hidden="true"><span>{{initials .Title}}</span></div>
+{{end}}
+{{end}}
+
+{{/* card is one movie. Variant is "top", "grid" or "seen"; Root carries the
+     page data so we can reach .CSRF and .User. */}}
+{{define "card"}}
+{{$m := .M}}{{$root := .Root}}{{$variant := .Variant}}
+<article class="card card-{{$variant}}{{if $m.VotedByMe}} card-voted{{end}}">
+  <div class="card-art">
+    {{template "poster" $m}}
+    {{if and (eq $variant "top") (medal $m.Rank)}}<span class="rank" title="Plats {{$m.Rank}}">{{medal $m.Rank}}</span>{{end}}
+    {{if $m.Seen}}<span class="stamp">Sedd{{with date $m.SeenAt}} {{.}}{{end}}</span>{{end}}
+    {{if $m.VotedByMe}}<span class="voted-flag" title="Du har röstat på den här">Din röst</span>{{end}}
+  </div>
+
+  <div class="card-body">
+    <h3 class="card-title">
+      {{$m.Title}}{{with $m.Year}} <span class="year">{{.}}</span>{{end}}
+    </h3>
+
+    <div class="meta">
+      {{with $m.Rating}}<span class="chip chip-rating" title="Betyg">★ {{.}}</span>{{end}}
+      {{with $m.Runtime}}<span class="chip">{{.}}</span>{{end}}
+      {{with $m.Genres}}<span class="chip chip-muted">{{.}}</span>{{end}}
+    </div>
+
+    {{if and $m.Overview (ne $variant "seen")}}<p class="overview">{{$m.Overview}}</p>{{end}}
+
+    <div class="votes">
+      <span class="votecount"><strong>{{$m.Votes}}</strong> {{plural $m.Votes "röst" "röster"}}</span>
+      {{with $m.Voters}}<span class="voters" title="{{join . ", "}}">{{join . ", "}}</span>{{end}}
+    </div>
+
+    <div class="card-foot">
+      <span class="byline">{{with $m.SuggestedBy}}Föreslagen av {{.}}{{else}}Föreslagen av en borttagen användare{{end}}</span>
+      {{with $m.IMDbURL}}<a class="imdb" href="{{.}}" target="_blank" rel="noopener noreferrer">IMDb ↗</a>{{end}}
+    </div>
+
+    <div class="actions">
+      {{if not $m.Seen}}
+        {{if $m.VotedByMe}}
+        <form method="post" action="/movies/{{$m.ID}}/unvote">
+          <input type="hidden" name="csrf" value="{{$root.CSRF}}">
+          <button class="btn btn-voted" type="submit">Ta tillbaka rösten</button>
+        </form>
+        {{else if $root.VotesLeft}}
+        <form method="post" action="/movies/{{$m.ID}}/vote">
+          <input type="hidden" name="csrf" value="{{$root.CSRF}}">
+          <button class="btn btn-vote" type="submit">Rösta</button>
+        </form>
+        {{else}}
+        <button class="btn btn-vote" type="button" disabled title="Du har inga röster kvar">Rösta</button>
+        {{end}}
+      {{end}}
+
+      {{if $root.User.IsAdmin}}
+        <form method="post" action="/movies/{{$m.ID}}/seen">
+          <input type="hidden" name="csrf" value="{{$root.CSRF}}">
+          <input type="hidden" name="seen" value="{{if $m.Seen}}0{{else}}1{{end}}">
+          <button class="btn btn-ghost" type="submit">{{if $m.Seen}}Tillbaka i röstningen{{else}}Markera som sedd{{end}}</button>
+        </form>
+      {{end}}
+
+      {{if or $root.User.IsAdmin (and (eq $m.SuggestedBy $root.User.Username) (eq $m.Votes 0) (not $m.Seen))}}
+        <form method="post" action="/movies/{{$m.ID}}/delete" data-confirm="Ta bort {{$m.Title}}?">
+          <input type="hidden" name="csrf" value="{{$root.CSRF}}">
+          <button class="btn btn-danger" type="submit" title="Ta bort filmen">Ta bort</button>
+        </form>
+      {{end}}
+    </div>
+  </div>
+</article>
+{{end}}

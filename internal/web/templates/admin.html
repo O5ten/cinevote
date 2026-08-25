@@ -1,0 +1,80 @@
+{{define "content"}}
+<section class="section">
+  <h1 class="section-title">Admin <span class="section-note">{{len .Users}} {{plural (len .Users) "användare" "användare"}} · {{len .Movies}} {{plural (len .Movies) "film" "filmer"}}</span></h1>
+  <p class="empty">Markera en film som sedd när den är visad — alla som röstat på den får tillbaka sin röst automatiskt.
+  {{if not .LookupEnabled}}<br>Posters och betyg hämtas inte automatiskt just nu. Skaffa en gratisnyckel på
+    <a href="{{.OMDbKeyURL}}" target="_blank" rel="noopener noreferrer">omdbapi.com/apikey.aspx</a>
+    och starta om med <code>OMDB_API_KEY=din-nyckel</code>.{{end}}</p>
+</section>
+
+<section class="section">
+  <h2 class="section-title">Filmer</h2>
+  <div class="tablewrap">
+    <table class="table">
+      <thead>
+        <tr><th>Film</th><th>Röster</th><th>Röstat</th><th>Föreslagen av</th><th>Status</th><th class="right">Åtgärd</th></tr>
+      </thead>
+      <tbody>
+      {{range .Movies}}
+        <tr{{if .Seen}} class="row-seen"{{end}}>
+          <td>
+            <span class="tabletitle">{{.Title}}</span>{{with .Year}} <span class="year">{{.}}</span>{{end}}
+            {{with .IMDbURL}}<a class="imdb" href="{{.}}" target="_blank" rel="noopener noreferrer">IMDb ↗</a>{{end}}
+          </td>
+          <td><strong>{{.Votes}}</strong></td>
+          <td class="voters-cell">{{if .Voters}}{{join .Voters ", "}}{{else}}—{{end}}</td>
+          <td>{{if .SuggestedBy}}{{.SuggestedBy}}{{else}}—{{end}}</td>
+          <td>{{if .Seen}}<span class="tag tag-seen">Sedd {{date .SeenAt}}</span>{{else}}<span class="tag tag-open">Plats {{.Rank}}</span>{{end}}</td>
+          <td class="right">
+            <div class="rowactions">
+              <form method="post" action="/movies/{{.ID}}/seen">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <input type="hidden" name="seen" value="{{if .Seen}}0{{else}}1{{end}}">
+                <button class="btn btn-ghost btn-sm" type="submit">{{if .Seen}}Öppna igen{{else}}Sedd{{end}}</button>
+              </form>
+              <form method="post" action="/movies/{{.ID}}/delete" data-confirm="Ta bort {{.Title}} och alla röster på den?">
+                <input type="hidden" name="csrf" value="{{$.CSRF}}">
+                <button class="btn btn-danger btn-sm" type="submit">Ta bort</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {{else}}
+        <tr><td colspan="6" class="empty">Inga filmer än.</td></tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="section-title">Användare</h2>
+  <div class="tablewrap">
+    <table class="table">
+      <thead>
+        <tr><th>Användare</th><th>Röster använda</th><th>Förslag</th><th>Medlem sedan</th><th class="right">Åtgärd</th></tr>
+      </thead>
+      <tbody>
+      {{range .Users}}
+        <tr>
+          <td><span class="tabletitle">{{.Username}}</span>{{if .IsAdmin}} <span class="tag tag-admin">admin</span>{{end}}</td>
+          <td>{{.VotesUsed}} / {{$.MaxVotes}}</td>
+          <td>{{.Movies}}</td>
+          <td>{{date .CreatedAt}}</td>
+          <td class="right">
+            {{if not .IsAdmin}}
+            <form method="post" action="/admin/users/{{.ID}}/delete" data-confirm="Ta bort {{.Username}} och deras röster?">
+              <input type="hidden" name="csrf" value="{{$.CSRF}}">
+              <button class="btn btn-danger btn-sm" type="submit">Ta bort</button>
+            </form>
+            {{else}}—{{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<p class="auth-alt"><a href="/">← Tillbaka till röstningen</a></p>
+{{end}}

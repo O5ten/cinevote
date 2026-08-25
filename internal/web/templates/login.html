@@ -1,0 +1,41 @@
+{{define "content"}}
+<section class="auth">
+  <h1 class="auth-title">Logga in</h1>
+  <p class="auth-sub">Rösta fram nästa filmkväll.</p>
+
+  {{with .Error}}<p class="formerror" role="alert">{{.}}</p>{{end}}
+
+  <form class="authform" method="post" action="/login">
+    <div class="field field-wide">
+      <label for="username">Användarnamn</label>
+      <input type="text" id="username" name="username" value="{{.Name}}" required autofocus
+             autocomplete="username" maxlength="32">
+    </div>
+    <div class="field field-wide">
+      <label for="password">Lösenord</label>
+      <input type="password" id="password" name="password" required autocomplete="current-password">
+    </div>
+    <button class="btn btn-primary btn-block" type="submit">Logga in</button>
+  </form>
+
+  {{if .Demo}}
+  <div class="demologins">
+    <p class="demologins-title">Demokonton <span class="opt">klicka för att fylla i</span></p>
+    <ul class="demologins-list">
+      {{range .DemoAccounts}}
+      <li>
+        <button type="button" class="demologin" data-username="{{.Username}}" data-password="{{$.DemoPassword}}">
+          <span class="demologin-name">{{.Username}}</span>
+          {{if .IsAdmin}}<span class="tag tag-admin">admin</span>{{end}}
+          {{with .Note}}<span class="demologin-note">{{.}}</span>{{end}}
+        </button>
+      </li>
+      {{end}}
+    </ul>
+    <p class="hint">Lösenord för alla: <code>{{.DemoPassword}}</code></p>
+  </div>
+  {{end}}
+
+  <p class="auth-alt">Har du inget konto? <a href="/register">Skapa ett</a>.</p>
+</section>
+{{end}}

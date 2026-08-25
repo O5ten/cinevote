@@ -1,0 +1,12 @@
+# Local secrets: the OMDb key lives here, never in git.
+.env
+
+# Local database and build output
+data/
+dist/
+*.db
+*.db-shm
+*.db-wal
+# The binary built by "go build" in the repo root — anchored so it does not
+# also match cmd/cinevote/.
+/cinevote
