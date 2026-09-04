@@ -232,10 +232,21 @@ view is a link you can paste in the group chat:
 | `show` | `open` (default), `all`, `seen` |
 | `view` | `cards` (default) or `list` |
 
-Equal vote counts are broken by rating, so the better-reviewed film is listed
-first — the same preference applies wherever films are ranked. While a filter is
-active the podium is hidden: those top-three ranks describe the whole board, and
-showing them beside a filtered list would be misleading.
+While a filter is active the podium is hidden: those top-three ranks describe
+the whole board, and showing them beside a filtered list would be misleading.
+
+### What gets premiered
+
+The film with the most votes wins. Level on votes, the film itself decides:
+
+1. **Most votes.**
+2. **Highest rating** — a film with no rating loses the tie.
+3. **Newest release** — an undated film loses the tie.
+4. Failing all of that, the film suggested first stays ahead, so the order never
+   wobbles between page loads.
+
+The same ordering runs in the database and in the filtered board, so the podium,
+the hero and any sorted list always agree on who is ahead.
 
 ### Two layouts
 

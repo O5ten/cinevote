@@ -895,6 +895,46 @@ func TestQuotaHiddenWithoutAProvider(t *testing.T) {
 	}
 }
 
+// What gets premiered when two films are level: the better-reviewed one, and
+// between equal reviews the newer film.
+func TestPremiereTieBreakOnTheBoard(t *testing.T) {
+	a := newApp(t, nil)
+	ada := a.client()
+	ada.register("Ada", "hunter2hunter2")
+
+	a.seedMovie(store.NewMovie{Title: "Levande Legend", Year: "1995", Rating: "7.4"})
+	a.seedMovie(store.NewMovie{Title: "Bättre Betyg", Year: "1988", Rating: "8.6"})
+	a.seedMovie(store.NewMovie{Title: "Nyare Film", Year: "2022", Rating: "8.6"})
+
+	movies, err := a.store.Movies(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One vote each, so only the film itself separates them.
+	ada.get("/")
+	for _, m := range movies {
+		ada.post("/movies/"+itoa64(m.ID)+"/vote", nil)
+	}
+
+	_, body := ada.get("/")
+	hero := section(body, `class="hero-text"`, "</section>")
+	mustContain(t, hero, "Nyare Film", "the newest of the best-rated films leads")
+	for _, loser := range []string{"Bättre Betyg", "Levande Legend"} {
+		if strings.Contains(hero, loser) {
+			t.Errorf("%q should not be presented as the leader", loser)
+		}
+	}
+
+	// And the podium is in the same order.
+	podium := section(body, `<div class="podium">`, "</section>")
+	first := strings.Index(podium, "Nyare Film")
+	second := strings.Index(podium, "Bättre Betyg")
+	third := strings.Index(podium, "Levande Legend")
+	if first < 0 || second < 0 || third < 0 || !(first < second && second < third) {
+		t.Errorf("podium order is wrong: newer=%d better=%d legend=%d", first, second, third)
+	}
+}
+
 func TestUnknownPathIs404(t *testing.T) {
 	a := newApp(t, nil)
 	status, body := a.client().get("/no-such-page")

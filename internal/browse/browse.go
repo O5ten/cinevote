@@ -174,12 +174,23 @@ func sortMovies(movies []store.Movie, key string) {
 			return strings.ToLower(movies[i].Title) < strings.ToLower(movies[j].Title)
 		})
 	default: // SortVotes
+		// The same tie-break the store applies, so the filtered board and the
+		// podium never disagree about which film is ahead.
 		sort.SliceStable(movies, func(i, j int) bool {
-			if movies[i].Votes != movies[j].Votes {
-				return movies[i].Votes > movies[j].Votes
+			a, b := movies[i], movies[j]
+			if a.Votes != b.Votes {
+				return a.Votes > b.Votes
 			}
-			// Equal support: put the better-reviewed film first.
-			return betterRated(movies[i], movies[j])
+			// Equal support: the better-reviewed film wins.
+			if ratingDiffers(a, b) {
+				return betterRated(a, b)
+			}
+			// Equally reviewed: the newer film wins. An unknown year loses, and
+			// beyond that the input order (earliest suggested first) stands.
+			if ya, yb := yearOf(a), yearOf(b); ya != yb {
+				return ya > yb
+			}
+			return false
 		})
 	}
 }

@@ -324,6 +324,24 @@ func TestEqualVotesAreBrokenByRating(t *testing.T) {
 	}
 }
 
+// Equal votes and equal rating: the newer film goes first. Same rule the store
+// applies, so the filtered board and the podium agree.
+func TestEqualVotesAndRatingAreBrokenByYear(t *testing.T) {
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	movies := []store.Movie{
+		{ID: 1, Title: "Undated", Votes: 2, Rating: "8.1", Year: "", CreatedAt: base},
+		{ID: 2, Title: "Older", Votes: 2, Rating: "8.1", Year: "1999", CreatedAt: base.Add(time.Hour)},
+		{ID: 3, Title: "Newest", Votes: 2, Rating: "8.1", Year: "2024", CreatedAt: base.Add(2 * time.Hour)},
+		{ID: 4, Title: "Newer", Votes: 2, Rating: "8.1", Year: "2015", CreatedAt: base.Add(3 * time.Hour)},
+		{ID: 5, Title: "Better", Votes: 2, Rating: "9.0", Year: "1974", CreatedAt: base.Add(4 * time.Hour)},
+	}
+	got := titles(Apply(movies, ParseQuery(map[string][]string{})))
+	want := []string{"Better", "Newest", "Newer", "Older", "Undated"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
 // Same for equally similar films: recommend the better-reviewed one first.
 func TestEqualSimilarityIsBrokenByRating(t *testing.T) {
 	target := store.Movie{ID: 1, Title: "Target", Year: "2020", Rating: "8.0", Genres: "Drama, Sci-Fi"}
